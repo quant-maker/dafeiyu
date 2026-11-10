@@ -52,7 +52,8 @@ jobs:
         run: |
           set -o pipefail
           if ! flutter build apk --release --split-per-abi 2>&1 | tee /tmp/build.log; then
-            grep -iE 'error|fail|exception|what went wrong|could not|not found' /tmp/build.log | tail -25 | sed 's/\r$//' | while IFS= read -r line; do
+            echo "===== tail ====="; tail -25 /tmp/build.log | sed 's/\r$//'
+            grep -n -A 12 -iE 'what went wrong|error:|FAILURE' /tmp/build.log | head -60 | sed 's/\r$//' | while IFS= read -r line; do
               [ -n "$line" ] && echo "::error::$line"
             done
             exit 1
@@ -93,8 +94,8 @@ jobs:
           else
             printf "platform :osx, '11.0'\n" | cat - macos/Podfile > /tmp/pf && mv /tmp/pf macos/Podfile
           fi
-          grep -n "osx" macos/Podfile | head -3
-          grep -c "MACOSX_DEPLOYMENT_TARGET = 11.0" macos/Runner.xcodeproj/project.pbxproj
+          grep -n "osx" macos/Podfile | head -3 || true
+          grep -c "MACOSX_DEPLOYMENT_TARGET = 11.0" macos/Runner.xcodeproj/project.pbxproj || true
 
       # Release entitlement must allow outbound network, otherwise the built
       # app cannot call any API. DebugProfile has it, Release does not.
@@ -117,7 +118,8 @@ jobs:
         run: |
           set -o pipefail
           if ! flutter build macos --release 2>&1 | tee /tmp/build.log; then
-            grep -iE 'error|fail|exception|required a higher|could not' /tmp/build.log | tail -25 | sed 's/\r$//' | while IFS= read -r line; do
+            echo "===== tail ====="; tail -25 /tmp/build.log | sed 's/\r$//'
+            grep -n -A 12 -iE 'error:|what went wrong|required a higher|FAILURE|pod install' /tmp/build.log | head -60 | sed 's/\r$//' | while IFS= read -r line; do
               [ -n "$line" ] && echo "::error::$line"
             done
             exit 1
