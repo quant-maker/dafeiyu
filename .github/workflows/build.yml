@@ -39,11 +39,20 @@ jobs:
 
       - run: flutter pub get
 
+      - name: Prepare Android SDK
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          echo "sdk=$SDK"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platform-tools" "platforms;android-36" "build-tools;35.0.0" > /dev/null 2>&1 || true
+          ls "$SDK/ndk" 2>/dev/null || echo "no ndk preinstalled"
+
       - name: Build APK
         run: |
           set -o pipefail
           if ! flutter build apk --release --split-per-abi 2>&1 | tee /tmp/build.log; then
-            tail -40 /tmp/build.log | sed 's/\r$//' | while IFS= read -r line; do
+            grep -iE 'error|fail|exception|what went wrong|could not|not found' /tmp/build.log | tail -25 | sed 's/\r$//' | while IFS= read -r line; do
               [ -n "$line" ] && echo "::error::$line"
             done
             exit 1
@@ -73,6 +82,20 @@ jobs:
       - name: Add macOS platform
         run: flutter create --platforms=macos .
 
+      # Plugins (speech_to_text, image_picker) need macOS 11+; the template
+      # defaults to 10.14, which makes `pod install` refuse to resolve.
+      - name: Raise macOS deployment target
+        run: |
+          sed -i '' 's/MACOSX_DEPLOYMENT_TARGET = 10.14;/MACOSX_DEPLOYMENT_TARGET = 11.0;/g' \
+            macos/Runner.xcodeproj/project.pbxproj || true
+          if grep -q '^platform :osx' macos/Podfile; then
+            sed -i '' "s/^platform :osx.*/platform :osx, '11.0'/" macos/Podfile
+          else
+            printf "platform :osx, '11.0'\n" | cat - macos/Podfile > /tmp/pf && mv /tmp/pf macos/Podfile
+          fi
+          grep -n "osx" macos/Podfile | head -3
+          grep -c "MACOSX_DEPLOYMENT_TARGET = 11.0" macos/Runner.xcodeproj/project.pbxproj
+
       # Release entitlement must allow outbound network, otherwise the built
       # app cannot call any API. DebugProfile has it, Release does not.
       - name: Allow network in release entitlements
@@ -94,7 +117,7 @@ jobs:
         run: |
           set -o pipefail
           if ! flutter build macos --release 2>&1 | tee /tmp/build.log; then
-            tail -40 /tmp/build.log | sed 's/\r$//' | while IFS= read -r line; do
+            grep -iE 'error|fail|exception|required a higher|could not' /tmp/build.log | tail -25 | sed 's/\r$//' | while IFS= read -r line; do
               [ -n "$line" ] && echo "::error::$line"
             done
             exit 1
