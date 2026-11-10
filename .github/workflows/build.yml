@@ -1,0 +1,147 @@
+name: build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.1'
+          channel: stable
+          cache: true
+
+      # Optional: inject the gateway key when the repo has a FEIYU_KEY secret.
+      # Without it the app simply asks for the key on first launch.
+      - name: Inject API key (optional)
+        run: |
+          if [ -n "${{ secrets.FEIYU_KEY }}" ]; then
+            sed -i "s/__FEIYU_KEY__/${{ secrets.FEIYU_KEY }}/" lib/main.dart
+            echo "key injected"
+          else
+            echo "no FEIYU_KEY secret; shipping placeholder build"
+          fi
+
+      - run: flutter pub get
+
+      # Android needs no NDK for this app; drop the forced ndkVersion so CI
+      # never downloads 700 MB it will not use.
+      - name: Drop ndkVersion pin
+        run: sed -i '/ndkVersion = /d' android/app/build.gradle.kts
+
+      - run: flutter build apk --release --split-per-abi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+
+  macos:
+    name: macOS App
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.1'
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      # The repo ships without a macos/ platform folder; generate it here.
+      - name: Add macOS platform
+        run: flutter create --platforms=macos .
+
+      # Release entitlement must allow outbound network, otherwise the built
+      # app cannot call any API. DebugProfile has it, Release does not.
+      - name: Allow network in release entitlements
+        run: |
+          ENT=macos/Runner/Release.entitlements
+          if ! grep -q 'network.client' "$ENT"; then
+            /usr/libexec/PlistBuddy -c 'Add :com.apple.security.network.client bool true' "$ENT"
+          fi
+          plutil -p "$ENT"
+
+      - name: Inject API key (optional)
+        run: |
+          if [ -n "${{ secrets.FEIYU_KEY }}" ]; then
+            sed -i '' "s/__FEIYU_KEY__/${{ secrets.FEIYU_KEY }}/" lib/main.dart
+            echo "key injected"
+          fi
+
+      - run: flutter build macos --release
+
+      - name: Package .app
+        run: |
+          cd build/macos/Build/Products/Release
+          ditto -c -k --sequesterRsrc --keepParent feiyu.app "$GITHUB_WORKSPACE/feiyu-macos.zip"
+          ls -lh "$GITHUB_WORKSPACE/feiyu-macos.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: feiyu-macos.zip
+          if-no-files-found: error
+
+  web:
+    name: Web bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.1'
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+      - run: flutter build web --release --base-href /
+      - run: cd build/web && zip -r "$GITHUB_WORKSPACE/feiyu-web.zip" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-bundle
+          path: feiyu-web.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [android, macos, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            ## 大肥鱼 ${{ github.ref_name }}
+
+            | 平台 | 文件 | 说明 |
+            |---|---|---|
+            | Android | `app-arm64-v8a-release.apk` | 现代手机，直接安装 |
+            | Android | `app-armeabi-v7a-release.apk` | 老机型 |
+            | macOS | `feiyu-macos.zip` | 解压后拖进「应用程序」；未签名，首次需右键 → 打开 |
+            | Web | `feiyu-web.zip` | 解压后用任意静态服务器托管，配合 `server/server.mjs` 使用 |

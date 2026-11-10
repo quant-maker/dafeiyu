@@ -31,3 +31,8 @@ tools/android-sdk/
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Local push helpers / secrets (never commit)
+git-token.txt
+git-push
+*.token
