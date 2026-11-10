@@ -36,6 +36,8 @@ class Settings {
   String model;
   String persona;
   bool memoryEnabled;
+  bool proactiveEnabled;
+  int proactiveIdleMinutes;
 
   Settings({
     required this.baseUrl,
@@ -43,6 +45,8 @@ class Settings {
     required this.model,
     required this.persona,
     this.memoryEnabled = true,
+    this.proactiveEnabled = false,
+    this.proactiveIdleMinutes = 8,
   });
 
   static const _k = 'feiyu.settings.v3';
@@ -66,6 +70,8 @@ class Settings {
       model: pick(j['model'] as String?, kDefaultModel),
       persona: pick(j['persona'] as String?, kPresetPersona),
       memoryEnabled: j['memoryEnabled'] as bool? ?? true,
+      proactiveEnabled: j['proactiveEnabled'] as bool? ?? false,
+      proactiveIdleMinutes: (j['proactiveIdleMinutes'] as num?)?.toInt() ?? 8,
     );
   }
 
@@ -79,6 +85,8 @@ class Settings {
         'model': model,
         'persona': persona,
         'memoryEnabled': memoryEnabled,
+        'proactiveEnabled': proactiveEnabled,
+        'proactiveIdleMinutes': proactiveIdleMinutes,
       }),
     );
   }
@@ -177,6 +185,9 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   String _voiceHint = '';
   http.Client? _client;
   int _turnsSinceDigest = 0;
+  String _activity = '';
+  Timer? _idleTimer;
+  int _proactiveCount = 0;
   late final AnimationController _dots;
 
   @override
@@ -185,7 +196,10 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     _dots = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat();
     Settings.load().then((s) {
       debugPrint('[feiyu] settings loaded base=${s.baseUrl} model=${s.model} keyLen=${s.apiKey.length}');
-      if (mounted) setState(() => _settings = s);
+      if (mounted) {
+        setState(() => _settings = s);
+        _resetIdleTimer();
+      }
     }).catchError((Object e, StackTrace st) {
       debugPrint('[feiyu] settings load FAILED: $e');
       if (mounted) {
@@ -210,6 +224,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   @override
   void dispose() {
     _client?.close();
+    _idleTimer?.cancel();
     _input.dispose();
     _scroll.dispose();
     _dots.dispose();
@@ -339,6 +354,32 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
   // ---------------- chat ----------------
 
+  // ---------------- agent loop ----------------
+
+  static const _toolSpecs = [
+    {
+      'type': 'function',
+      'function': {
+        'name': 'fetch_url',
+        'description': '抓取一个网页的正文文字，用于回答需要上网查资料的问题。只接受 http/https 链接。',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'url': {'type': 'string', 'description': '完整网址，例如 https://example.com/page'},
+          },
+          'required': ['url'],
+        },
+      },
+    },
+  ];
+
+  String _systemPrompt(Settings s) => [
+        if (s.persona.trim().isNotEmpty) s.persona.trim(),
+        if (s.memoryEnabled) _memory.asPrompt(),
+        '你可以调用 fetch_url 抓取网页正文。需要查资料、看链接里写了什么时就用它，'
+            '不要凭空猜网页内容；抓到内容后用自己的话回答，别整段照抄。',
+      ].where((x) => x.isNotEmpty).join('\n\n');
+
   Future<void> _send([String? override]) async {
     final text = (override ?? _input.text).trim();
     final s = _settings;
@@ -359,75 +400,41 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       _messages.add(Message('assistant', ''));
     });
     _scrollToEnd();
+    await _runAgent();
+  }
 
+  Future<void> _runAgent() async {
+    final s = _settings!;
     final target = _messages.last;
-    final history = <Map<String, dynamic>>[
-      {
-        'role': 'system',
-        'content': [
-          if (s.persona.trim().isNotEmpty) s.persona.trim(),
-          if (s.memoryEnabled) _memory.asPrompt(),
-        ].where((x) => x.isNotEmpty).join('\n\n'),
-      },
+    final convo = <Map<String, dynamic>>[
+      {'role': 'system', 'content': _systemPrompt(s)},
       ..._messages
           .where((m) => m.content.trim().isNotEmpty || m.imageBase64 != null)
           .map((m) => m.toJson()),
     ];
 
     try {
-      final base = s.baseUrl.endsWith('/') ? s.baseUrl.substring(0, s.baseUrl.length - 1) : s.baseUrl;
-      final client = http.Client();
-      _client = client;
-      final req = http.Request('POST', Uri.parse('$base/chat/completions'))
-        ..headers.addAll({
-          'content-type': 'application/json',
-          'authorization': 'Bearer ${s.apiKey}',
-        })
-        ..body = jsonEncode({'model': s.model, 'stream': true, 'messages': history});
+      for (var round = 0; round < 4; round++) {
+        final result = await _streamTurn(s, convo, target);
+        if (result.toolCalls.isEmpty) break;
 
-      final resp = await client.send(req);
-      if (resp.statusCode != 200) {
-        final body = await resp.stream.bytesToString();
-        throw Exception('HTTP ${resp.statusCode}: ${body.length > 300 ? body.substring(0, 300) : body}');
-      }
-
-      final buffer = StringBuffer();
-      final done = Completer<void>();
-      late StreamSubscription<String> sub;
-      sub = resp.stream.transform(utf8.decoder).transform(const LineSplitter()).listen(
-        (line) {
-          if (!line.startsWith('data:')) return;
-          final data = line.substring(5).trim();
-          if (data.isEmpty) return;
-          if (data == '[DONE]') {
-            if (!done.isCompleted) done.complete();
-            return;
-          }
+        convo.add({'role': 'assistant', 'content': result.text, 'tool_calls': result.toolCalls});
+        for (final call in result.toolCalls) {
+          final fn = (call['function'] ?? const {}) as Map;
+          final name = (fn['name'] ?? '') as String;
+          final rawArgs = (fn['arguments'] ?? '{}') as String;
+          final id = (call['id'] ?? '') as String;
+          String output;
           try {
-            final j = jsonDecode(data) as Map<String, dynamic>;
-            final delta = (j['choices'] as List?)?.first?['delta'] as Map?;
-            final piece = delta?['content'] as String?;
-            if (piece != null && piece.isNotEmpty) {
-              buffer.write(piece);
-              if (mounted) {
-                setState(() {
-                  target.content = buffer.toString();
-                  _waitingFirstToken = false;
-                });
-              }
-              _scrollToEnd();
-            }
-          } catch (_) {}
-        },
-        onDone: () {
-          if (!done.isCompleted) done.complete();
-        },
-        onError: (Object e) {
-          if (!done.isCompleted) done.completeError(e);
-        },
-      );
-      await done.future.timeout(const Duration(minutes: 5));
-      await sub.cancel();
+            final args = (jsonDecode(rawArgs.isEmpty ? '{}' : rawArgs) as Map).cast<String, dynamic>();
+            output = await _execTool(name, args);
+          } catch (e) {
+            output = '工具执行失败：$e';
+          }
+          convo.add({'role': 'tool', 'tool_call_id': id, 'content': output});
+          if (mounted) setState(() => _activity = '');
+        }
+      }
 
       _turnsSinceDigest++;
       if (s.memoryEnabled && _turnsSinceDigest >= 3) {
@@ -443,9 +450,224 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         setState(() {
           _busy = false;
           _waitingFirstToken = false;
+          _activity = '';
           if (target.content.trim().isEmpty) _messages.removeLast();
         });
+        _resetIdleTimer();
       }
+    }
+  }
+
+  Future<({String text, List<Map<String, dynamic>> toolCalls})> _streamTurn(
+    Settings s,
+    List<Map<String, dynamic>> convo,
+    Message target,
+  ) async {
+    final base = s.baseUrl.endsWith('/') ? s.baseUrl.substring(0, s.baseUrl.length - 1) : s.baseUrl;
+    final client = http.Client();
+    _client = client;
+    final req = http.Request('POST', Uri.parse('$base/chat/completions'))
+      ..headers.addAll({
+        'content-type': 'application/json',
+        'authorization': 'Bearer ${s.apiKey}',
+      })
+      ..body = jsonEncode({
+        'model': s.model,
+        'stream': true,
+        'messages': convo,
+        'tools': _toolSpecs,
+        'tool_choice': 'auto',
+      });
+
+    final resp = await client.send(req);
+    if (resp.statusCode != 200) {
+      final body = await resp.stream.bytesToString();
+      throw Exception('HTTP ${resp.statusCode}: ${body.length > 300 ? body.substring(0, 300) : body}');
+    }
+
+    final buffer = StringBuffer();
+    final calls = <int, Map<String, dynamic>>{};
+    final done = Completer<void>();
+    late StreamSubscription<String> sub;
+    sub = resp.stream.transform(utf8.decoder).transform(const LineSplitter()).listen(
+      (line) {
+        if (!line.startsWith('data:')) return;
+        final data = line.substring(5).trim();
+        if (data.isEmpty) return;
+        if (data == '[DONE]') {
+          if (!done.isCompleted) done.complete();
+          return;
+        }
+        try {
+          final j = jsonDecode(data) as Map<String, dynamic>;
+          final delta = (j['choices'] as List?)?.first?['delta'] as Map?;
+          if (delta == null) return;
+
+          final piece = delta['content'] as String?;
+          if (piece != null && piece.isNotEmpty) {
+            buffer.write(piece);
+            if (mounted) {
+              setState(() {
+                target.content = buffer.toString();
+                _waitingFirstToken = false;
+              });
+            }
+            _scrollToEnd();
+          }
+
+          final tcs = delta['tool_calls'] as List?;
+          if (tcs != null) {
+            for (final raw in tcs) {
+              final tc = raw as Map;
+              final idx = (tc['index'] as num?)?.toInt() ?? 0;
+              final acc = calls.putIfAbsent(idx, () => {
+                    'id': '',
+                    'type': 'function',
+                    'function': <String, dynamic>{'name': '', 'arguments': ''},
+                  });
+              if (tc['id'] != null && (acc['id'] as String).isEmpty) acc['id'] = tc['id'];
+              final fn = tc['function'] as Map?;
+              final fstore = acc['function'] as Map<String, dynamic>;
+              if (fn != null) {
+                if (fn['name'] != null) fstore['name'] = (fstore['name'] as String) + (fn['name'] as String);
+                if (fn['arguments'] != null) {
+                  fstore['arguments'] = (fstore['arguments'] as String) + (fn['arguments'] as String);
+                }
+              }
+            }
+            if (mounted) setState(() => _activity = '正在查资料…');
+          }
+        } catch (_) {}
+      },
+      onDone: () {
+        if (!done.isCompleted) done.complete();
+      },
+      onError: (Object e) {
+        if (!done.isCompleted) done.completeError(e);
+      },
+    );
+
+    await done.future.timeout(const Duration(minutes: 5));
+    await sub.cancel();
+    client.close();
+    _client = null;
+
+    final ordered = (calls.keys.toList()..sort()).map((k) => calls[k]!).toList();
+    return (text: buffer.toString(), toolCalls: ordered);
+  }
+
+  Future<String> _execTool(String name, Map<String, dynamic> args) async {
+    if (name != 'fetch_url') return '未知工具：$name';
+    final url = (args['url'] ?? '').toString().trim();
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return '只支持 http/https 链接';
+    if (mounted) setState(() => _activity = '正在读网页…');
+    try {
+      final text = await _fetchPage(url);
+      if (mounted) setState(() => _activity = '');
+      return text.isEmpty ? '（页面没有可读正文）' : text;
+    } catch (e) {
+      if (mounted) setState(() => _activity = '');
+      return '抓取失败：$e';
+    }
+  }
+
+  Future<String> _fetchPage(String url) async {
+    const limit = 6000;
+    if (kIsWeb) {
+      // Browsers cannot fetch arbitrary sites (CORS), so the local server does it.
+      final proxy = '${Uri.base.origin}/fetch?url=${Uri.encodeComponent(url)}';
+      final res = await http.get(Uri.parse(proxy)).timeout(const Duration(seconds: 25));
+      if (res.statusCode != 200) throw Exception('代理 HTTP ${res.statusCode}');
+      final text = utf8.decode(res.bodyBytes, allowMalformed: true);
+      return text.length > limit ? text.substring(0, limit) : text;
+    }
+    final res = await http
+        .get(Uri.parse(url), headers: {'user-agent': 'Mozilla/5.0 (compatible; feiyu/1.0)'})
+        .timeout(const Duration(seconds: 25));
+    if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
+    return _htmlToText(utf8.decode(res.bodyBytes, allowMalformed: true), limit);
+  }
+
+  static String _htmlToText(String html, int limit) {
+    final text = html
+        .replaceAll(RegExp(r'(?is)<script.*?</script>'), ' ')
+        .replaceAll(RegExp(r'(?is)<style.*?</style>'), ' ')
+        .replaceAll(RegExp(r'(?is)<head.*?</head>'), ' ')
+        .replaceAll(RegExp(r'(?s)<[^>]+>'), ' ')
+        .replaceAll('&nbsp;', ' ')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&amp;', '&')
+        .replaceAll('&quot;', '"')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    return text.length > limit ? text.substring(0, limit) : text;
+  }
+
+  // ---------------- proactive ----------------
+
+  void _resetIdleTimer() {
+    _idleTimer?.cancel();
+    final s = _settings;
+    if (s == null || !s.proactiveEnabled) return;
+    if (_proactiveCount >= 3) return;
+    if (_messages.isEmpty) return;
+    _idleTimer = Timer(Duration(minutes: s.proactiveIdleMinutes), _maybeSpeakUp);
+  }
+
+  Future<void> _maybeSpeakUp() async {
+    final s = _settings;
+    if (s == null || !s.proactiveEnabled || _busy || !mounted) return;
+    if (_proactiveCount >= 3) return;
+
+    final recent = _messages
+        .where((m) => m.content.trim().isNotEmpty)
+        .toList()
+        .reversed
+        .take(6)
+        .toList()
+        .reversed
+        .map((m) => '${m.role == 'user' ? '主人' : '我'}：${m.content}')
+        .join('\n');
+    if (recent.isEmpty) return;
+
+    try {
+      setState(() => _busy = true);
+      final base = s.baseUrl.endsWith('/') ? s.baseUrl.substring(0, s.baseUrl.length - 1) : s.baseUrl;
+      final res = await http
+          .post(
+            Uri.parse('$base/chat/completions'),
+            headers: {'content-type': 'application/json', 'authorization': 'Bearer ${s.apiKey}'},
+            body: jsonEncode({
+              'model': s.model,
+              'stream': false,
+              'messages': [
+                {'role': 'system', 'content': _systemPrompt(s)},
+                {'role': 'user', 'content': recent},
+                {
+                  'role': 'system',
+                  'content': '主人已经一段时间没说话了。用一句很短的话主动搭个话：可以接着刚才的话题，'
+                      '也可以随口分享一点自己的念头。不要问「你在吗」，不要客套，不要超过 30 字。'
+                },
+              ],
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+      if (res.statusCode != 200) return;
+      final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final raw = ((j['choices'] as List).first['message'] as Map)['content'] as String? ?? '';
+      final said = raw.trim();
+      if (said.isEmpty || !mounted) return;
+      setState(() {
+        _proactiveCount++;
+        _messages.add(Message('assistant', said));
+      });
+      _scrollToEnd();
+    } catch (_) {
+      // Proactive chat is best-effort.
+    } finally {
+      if (mounted) setState(() => _busy = false);
+      _resetIdleTimer();
     }
   }
 
@@ -508,7 +730,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
   /// Visible diagnostics: tells you exactly which piece is missing.
   String _statusLine() {
-    if (_busy) return '正在想…';
+    if (_busy) return _activity.isNotEmpty ? _activity : '正在想…';
     final s = _settings;
     if (s == null) return '加载设置中…';
     final keyState = s.apiKey.isEmpty ? 'key✗' : 'key✓${s.apiKey.length}';
@@ -879,6 +1101,8 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _model;
   late final TextEditingController _persona;
   late bool _memoryEnabled;
+  late bool _proactiveEnabled;
+  late int _proactiveIdleMinutes;
   List<String> _models = const [];
   bool _loadingModels = false;
   String? _modelError;
@@ -891,6 +1115,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _model = TextEditingController(text: widget.initial.model);
     _persona = TextEditingController(text: widget.initial.persona);
     _memoryEnabled = widget.initial.memoryEnabled;
+    _proactiveEnabled = widget.initial.proactiveEnabled;
+    _proactiveIdleMinutes = widget.initial.proactiveIdleMinutes;
     _loadModels();
   }
 
@@ -934,6 +1160,8 @@ class _SettingsPageState extends State<SettingsPage> {
       model: _model.text.trim(),
       persona: _persona.text,
       memoryEnabled: _memoryEnabled,
+      proactiveEnabled: _proactiveEnabled,
+      proactiveIdleMinutes: _proactiveIdleMinutes,
     ));
   }
 
@@ -1026,6 +1254,35 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('自动记忆'),
             subtitle: const Text('每几轮抽取关于你的长期事实，存在本机'),
           ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _proactiveEnabled,
+            onChanged: (v) => setState(() => _proactiveEnabled = v),
+            title: const Text('主动开口'),
+            subtitle: Text(_proactiveEnabled
+                ? '你有 $_proactiveIdleMinutes 分钟没说话，它会自己搭一句（只在 App 打开时，每场最多 3 次）'
+                : '打开后，你不说话时它会主动找你'),
+          ),
+          if (_proactiveEnabled)
+            Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 8),
+              child: Row(
+                children: [
+                  const Text('空闲触发：', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  Expanded(
+                    child: Slider(
+                      value: _proactiveIdleMinutes.toDouble().clamp(2, 60),
+                      min: 2,
+                      max: 60,
+                      divisions: 29,
+                      label: '$_proactiveIdleMinutes 分钟',
+                      onChanged: (v) => setState(() => _proactiveIdleMinutes = v.round()),
+                    ),
+                  ),
+                  Text('$_proactiveIdleMinutes 分钟', style: const TextStyle(fontSize: 12)),
+                ],
+              ),
+            ),
           const Divider(height: 28),
           Text('现在记得 ${widget.memory.facts.length} 条', style: const TextStyle(fontSize: 12, color: Colors.grey)),
           const SizedBox(height: 6),
