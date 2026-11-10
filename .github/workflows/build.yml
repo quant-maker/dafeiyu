@@ -45,7 +45,7 @@ jobs:
           echo "sdk=$SDK"
           yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
           "$SDK/cmdline-tools/latest/bin/sdkmanager" --install \
-            "platform-tools" "platforms;android-36" "build-tools;35.0.0" > /dev/null 2>&1 || true
+            "platform-tools" "platforms;android-36" "build-tools;35.0.0" "ndk;27.0.12077973" > /dev/null 2>&1 || true
           ls "$SDK/ndk" 2>/dev/null || echo "no ndk preinstalled"
 
       - name: Build APK
@@ -68,6 +68,9 @@ jobs:
   macos:
     name: macOS App
     runs-on: macos-latest
+    # Experimental: the Xcode toolchain on runners is still being sorted out,
+    # so a macOS failure must not block the Android/Web release.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -161,7 +164,7 @@ jobs:
 
   release:
     name: Publish release
-    needs: [android, macos, web]
+    needs: [android, web]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
