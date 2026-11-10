@@ -1,0 +1,33 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+build/
+*.iml
+.idea/
+android/.gradle/
+android/local.properties
+android/app/debug/
+ios/Pods/
+
+# Build artifacts
+*.apk
+*.aab
+*.ipa
+*.bundle
+
+# Local toolchain and secrets (never commit)
+certs/
+tmp/
+tools/appdata/
+tools/pub-cache/
+tools/gradle-home/
+tools/android-user/
+tools/home/
+tools/flutter/
+tools/jdk/
+tools/android-sdk/
+*.log
+
+# OS noise
+.DS_Store
+Thumbs.db
