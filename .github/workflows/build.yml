@@ -39,12 +39,15 @@ jobs:
 
       - run: flutter pub get
 
-      # Android needs no NDK for this app; drop the forced ndkVersion so CI
-      # never downloads 700 MB it will not use.
-      - name: Drop ndkVersion pin
-        run: sed -i '/ndkVersion = /d' android/app/build.gradle.kts
-
-      - run: flutter build apk --release --split-per-abi
+      - name: Build APK
+        run: |
+          set -o pipefail
+          if ! flutter build apk --release --split-per-abi 2>&1 | tee /tmp/build.log; then
+            tail -40 /tmp/build.log | sed 's/\r$//' | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::$line"
+            done
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -87,7 +90,15 @@ jobs:
             echo "key injected"
           fi
 
-      - run: flutter build macos --release
+      - name: Build macOS app
+        run: |
+          set -o pipefail
+          if ! flutter build macos --release 2>&1 | tee /tmp/build.log; then
+            tail -40 /tmp/build.log | sed 's/\r$//' | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::$line"
+            done
+            exit 1
+          fi
 
       - name: Package .app
         run: |
