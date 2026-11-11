@@ -46,12 +46,14 @@ if (-not (Test-Path (Join-Path $app 'pubspec.yaml'))) { Log 'CREATE FAILED'; exi
 Log 'created'
 
 Copy-Item (Join-Path $ws 'feiyu_app_src\main.dart') (Join-Path $app 'lib\main.dart') -Force
+Copy-Item (Join-Path $ws 'feiyu_app_src\memory') (Join-Path $app 'lib\memory') -Recurse -Force -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $ws 'feiyu_app_src\feeds') (Join-Path $app 'lib\feeds') -Recurse -Force -ErrorAction SilentlyContinue
 Log 'main.dart installed'
 
 Push-Location $app
 try {
   Log 'pub add'
-  Flutter @('pub', 'add', 'http', 'shared_preferences', 'speech_to_text', 'image_picker') | Select-Object -Last 5 | ForEach-Object { Log "  $_" }
+  Flutter @('pub', 'add', 'http', 'shared_preferences', 'speech_to_text', 'image_picker', 'video_player') | Select-Object -Last 5 | ForEach-Object { Log "  $_" }
   Log 'pub get done'
   Log 'build apk --release'
   Flutter @('build', 'apk', '--release', '--split-per-abi') | Select-Object -Last 30 | ForEach-Object { Log "  $_" }

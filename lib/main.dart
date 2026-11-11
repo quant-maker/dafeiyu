@@ -9,6 +9,8 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
+import 'feeds/footprints.dart';
+import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'scene/scene_stage.dart';
 
@@ -231,6 +233,8 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   Memory _memory = Memory();
   Archive _archive = Archive();
   int _summarized = 0;
+  List<Footprint> _footprints = const [];
+  int _turnsSinceFootprint = 0;
 
   Settings? _settings;
   bool _busy = false;
@@ -279,6 +283,11 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       if (mounted) setState(() => _archive = a);
     }).catchError((Object e) {
       debugPrint('[feiyu] archive load FAILED: $e');
+    });
+    FootprintStore.load().then((items) {
+      if (mounted) setState(() => _footprints = items);
+    }).catchError((Object e) {
+      debugPrint('[feiyu] footprints load FAILED: $e');
     });
     ChatStore.load().then((history) {
       if (!mounted || history.isEmpty) return;
@@ -573,6 +582,14 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         });
         unawaited(ChatStore.save(_messages));
         unawaited(_maybeSummarize(s));
+        _turnsSinceFootprint++;
+        if (_turnsSinceFootprint >= 6) {
+          _turnsSinceFootprint = 0;
+          unawaited(_distillFootprint(s).then((f) {
+            if (f != null && mounted) setState(() => _footprints = [f, ..._footprints]);
+            return null;
+          }));
+        }
         _resetIdleTimer();
       }
     }
@@ -957,6 +974,93 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     return '找到这些旧记录：\n' + hits.map((e) => '【${e.day}】${e.text}').join('\n\n');
   }
 
+  // ---------------- footprints ----------------
+
+  Future<void> _openFootprints() async {
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => FootprintsPage(
+        items: _footprints,
+        onDistill: () async {
+          final s = _settings;
+          if (s == null) return null;
+          final f = await _distillFootprint(s);
+          if (f != null) {
+            final next = [f, ..._footprints];
+            if (mounted) setState(() => _footprints = next);
+            await FootprintStore.save(next);
+            return f;
+          }
+          return null;
+        },
+      ),
+    ));
+  }
+
+  /// Ask the model to keep exactly one memorable moment from the recent past.
+  Future<Footprint?> _distillFootprint(Settings s) async {
+    final recent = _messages
+        .where((m) => m.content.trim().isNotEmpty)
+        .toList()
+        .reversed
+        .take(16)
+        .toList()
+        .reversed
+        .map((m) => '${m.role == 'user' ? '主人' : '我'}：${m.content}')
+        .join('\n');
+    if (recent.trim().isEmpty) return null;
+
+    try {
+      final base = s.baseUrl.endsWith('/') ? s.baseUrl.substring(0, s.baseUrl.length - 1) : s.baseUrl;
+      final res = await http
+          .post(
+            Uri.parse('$base/chat/completions'),
+            headers: {'content-type': 'application/json', 'authorization': 'Bearer ${s.apiKey}'},
+            body: jsonEncode({
+              'model': s.model,
+              'stream': false,
+              'messages': [
+                {
+                  'role': 'system',
+                  'content': '从这段对话里挑【一个】值得收藏的瞬间，用大肥鱼的口吻写成一句小记录。'
+                      '只输出 JSON：{"title":"不超过12字的小标题","body":"不超过60字的一句话","mood":"一个表情"}。'
+                      '如果没有值得记的，只输出 NONE。不要解释。'
+                },
+                {'role': 'user', 'content': recent},
+              ],
+            }),
+          )
+          .timeout(const Duration(seconds: 60));
+      if (res.statusCode != 200) return null;
+      final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final raw = (((j['choices'] as List).first['message'] as Map)['content'] as String? ?? '').trim();
+      if (raw.isEmpty || raw.toUpperCase().contains('NONE')) return null;
+
+      final start = raw.indexOf('{');
+      final end = raw.lastIndexOf('}');
+      if (start < 0 || end <= start) return null;
+      final map = (jsonDecode(raw.substring(start, end + 1)) as Map).cast<String, dynamic>();
+      final title = (map['title'] ?? '').toString().trim();
+      final body = (map['body'] ?? '').toString().trim();
+      if (title.isEmpty || body.isEmpty) return null;
+
+      final f = Footprint(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        at: DateTime.now(),
+        title: title,
+        body: body,
+        mood: (map['mood'] ?? '🐟').toString(),
+      );
+      final next = [f, ..._footprints];
+      _footprints = next;
+      await FootprintStore.save(next);
+      debugPrint('[feiyu] footprint kept: $title');
+      return f;
+    } catch (e) {
+      debugPrint('[feiyu] footprint FAILED: $e');
+      return null;
+    }
+  }
+
   // ---------------- UI ----------------
 
   @override
@@ -998,6 +1102,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
             ],
           ),
           actions: [
+            IconButton(onPressed: _openFootprints, icon: const Icon(Icons.photo_library_outlined), tooltip: '她的足迹'),
             IconButton(onPressed: _clear, icon: const Icon(Icons.auto_awesome_outlined), tooltip: '新会话'),
             IconButton(onPressed: _openSettings, icon: const Icon(Icons.tune), tooltip: '设置'),
             const SizedBox(width: 4),
