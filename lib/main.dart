@@ -8,6 +8,8 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
+import 'scene/scene_stage.dart';
+
 // Injected by tools/build-web.ps1 / build-apk.ps1 from the local launcher.
 const kInjectedKey = '__FEIYU_KEY__';
 // Sentinel is split so the build-time replace cannot rewrite this comparison.
@@ -37,6 +39,7 @@ class Settings {
   String persona;
   bool memoryEnabled;
   bool proactiveEnabled;
+  bool sceneEnabled;
   int proactiveIdleMinutes;
 
   Settings({
@@ -46,6 +49,7 @@ class Settings {
     required this.persona,
     this.memoryEnabled = true,
     this.proactiveEnabled = false,
+    this.sceneEnabled = true,
     this.proactiveIdleMinutes = 8,
   });
 
@@ -71,6 +75,7 @@ class Settings {
       persona: pick(j['persona'] as String?, kPresetPersona),
       memoryEnabled: j['memoryEnabled'] as bool? ?? true,
       proactiveEnabled: j['proactiveEnabled'] as bool? ?? false,
+      sceneEnabled: j['sceneEnabled'] as bool? ?? true,
       proactiveIdleMinutes: (j['proactiveIdleMinutes'] as num?)?.toInt() ?? 8,
     );
   }
@@ -86,6 +91,7 @@ class Settings {
         'persona': persona,
         'memoryEnabled': memoryEnabled,
         'proactiveEnabled': proactiveEnabled,
+        'sceneEnabled': sceneEnabled,
         'proactiveIdleMinutes': proactiveIdleMinutes,
       }),
     );
@@ -131,7 +137,8 @@ class Message {
   final String role;
   String content;
   final String? imageBase64;
-  Message(this.role, this.content, {this.imageBase64});
+  final DateTime at;
+  Message(this.role, this.content, {this.imageBase64, DateTime? at}) : at = at ?? DateTime.now();
 
   Map<String, dynamic> toJson() {
     if (imageBase64 == null) return {'role': role, 'content': content};
@@ -142,6 +149,47 @@ class Message {
         {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,$imageBase64'}},
       ],
     };
+  }
+
+  Map<String, dynamic> toStore() => {
+        'role': role,
+        'content': content,
+        'at': at.toIso8601String(),
+        if (imageBase64 != null) 'img': imageBase64,
+      };
+
+  static Message fromStore(Map<String, dynamic> j) => Message(
+        (j['role'] ?? 'user') as String,
+        (j['content'] ?? '') as String,
+        imageBase64: j['img'] as String?,
+        at: DateTime.tryParse((j['at'] ?? '') as String) ?? DateTime.now(),
+      );
+}
+
+/// Conversation history that survives restarts.
+class ChatStore {
+  static const _k = 'feiyu.history.v2';
+
+  static Future<List<Message>> load() async {
+    final sp = await SharedPreferences.getInstance();
+    final raw = sp.getStringList(_k) ?? const [];
+    final out = <Message>[];
+    for (final line in raw) {
+      try {
+        out.add(Message.fromStore(jsonDecode(line) as Map<String, dynamic>));
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  static Future<void> save(List<Message> messages) async {
+    final sp = await SharedPreferences.getInstance();
+    final keep = messages.length > 200 ? messages.sublist(messages.length - 200) : messages;
+    final lines = keep
+        .where((m) => m.content.trim().isNotEmpty || m.imageBase64 != null)
+        .map((m) => jsonEncode(m.toStore()))
+        .toList();
+    await sp.setStringList(_k, lines);
   }
 }
 
@@ -218,6 +266,18 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       if (mounted) setState(() => _memory = m);
     }).catchError((Object e) {
       debugPrint('[feiyu] memory load FAILED: $e');
+    });
+    ChatStore.load().then((history) {
+      if (!mounted || history.isEmpty) return;
+      setState(() {
+        _messages
+          ..clear()
+          ..addAll(history);
+      });
+      _scrollToEnd(animate: false);
+      debugPrint('[feiyu] restored ${history.length} messages');
+    }).catchError((Object e) {
+      debugPrint('[feiyu] history load FAILED: $e');
     });
   }
 
@@ -371,14 +431,37 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         },
       },
     },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'remember',
+        'description': '把值得长期记住的一件事写进长期记忆。适合：对方的偏好、约定、正在做的项目、重要经历。'
+            '一条只写一个事实，用陈述句，不超过 30 字。',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'fact': {'type': 'string', 'description': '例如：主人喜欢用机械键盘敲代码'},
+          },
+          'required': ['fact'],
+        },
+      },
+    },
   ];
 
-  String _systemPrompt(Settings s) => [
-        if (s.persona.trim().isNotEmpty) s.persona.trim(),
-        if (s.memoryEnabled) _memory.asPrompt(),
-        '你可以调用 fetch_url 抓取网页正文。需要查资料、看链接里写了什么时就用它，'
-            '不要凭空猜网页内容；抓到内容后用自己的话回答，别整段照抄。',
-      ].where((x) => x.isNotEmpty).join('\n\n');
+  String _systemPrompt(Settings s) {
+    final now = DateTime.now();
+    final today = '${now.year}年${now.month}月${now.day}日 ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    return [
+      if (s.persona.trim().isNotEmpty) s.persona.trim(),
+      '现在是 $today。下面的对话记录可能跨越好几天，注意日期。'
+          '如果对方问起以前聊过的事，先看记录和记忆；确实没有就直说没印象，不要编。',
+      if (s.memoryEnabled) _memory.asPrompt(),
+      '你可以调用两个工具：'
+          '① fetch_url 抓网页正文（查资料、看链接时用，别凭空猜网页内容）；'
+          '② remember 把值得长期记住的事记下来（对方的偏好、约定、正在做的项目、重要经历），'
+          '一条一句话，不要记流水账。抓到内容后用自己的话答，别整段照抄。',
+    ].where((x) => x.isNotEmpty).join('\n\n');
+  }
 
   Future<void> _send([String? override]) async {
     final text = (override ?? _input.text).trim();
@@ -408,9 +491,15 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     final target = _messages.last;
     final convo = <Map<String, dynamic>>[
       {'role': 'system', 'content': _systemPrompt(s)},
-      ..._messages
-          .where((m) => m.content.trim().isNotEmpty || m.imageBase64 != null)
-          .map((m) => m.toJson()),
+      ...(() {
+        // Keep the prompt bounded: long-term knowledge lives in memory facts,
+        // so only the most recent exchanges ride along as literal messages.
+        final usable = _messages
+            .where((m) => m.content.trim().isNotEmpty || m.imageBase64 != null)
+            .toList();
+        final tail = usable.length > 30 ? usable.sublist(usable.length - 30) : usable;
+        return tail.map((m) => m.toJson());
+      })(),
     ];
 
     try {
@@ -453,6 +542,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           _activity = '';
           if (target.content.trim().isEmpty) _messages.removeLast();
         });
+        unawaited(ChatStore.save(_messages));
         _resetIdleTimer();
       }
     }
@@ -557,6 +647,15 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
 
   Future<String> _execTool(String name, Map<String, dynamic> args) async {
+    if (name == 'remember') {
+      final fact = (args['fact'] ?? '').toString().trim();
+      if (fact.isEmpty) return '没有可记的内容';
+      await _memory.merge([fact]);
+      if (mounted) setState(() => _activity = '记下了：$fact');
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      if (mounted) setState(() => _activity = '');
+      return '已记住：$fact';
+    }
     if (name != 'fetch_url') return '未知工具：$name';
     final url = (args['url'] ?? '').toString().trim();
     if (!url.startsWith('http://') && !url.startsWith('https://')) return '只支持 http/https 链接';
@@ -662,6 +761,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         _proactiveCount++;
         _messages.add(Message('assistant', said));
       });
+      unawaited(ChatStore.save(_messages));
       _scrollToEnd();
     } catch (_) {
       // Proactive chat is best-effort.
@@ -726,9 +826,16 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   void _clear() => setState(() {
         _messages.clear();
         _error = null;
+        unawaited(ChatStore.save(const []));
       });
 
   /// Visible diagnostics: tells you exactly which piece is missing.
+  SceneMood get _mood {
+    if (_busy) return _waitingFirstToken ? SceneMood.thinking : SceneMood.speaking;
+    if (_listening) return SceneMood.listening;
+    return SceneMood.idle;
+  }
+
   String _statusLine() {
     if (_busy) return _activity.isNotEmpty ? _activity : '正在想…';
     final s = _settings;
@@ -742,14 +849,9 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF122444), Color(0xFF0B1220), Color(0xFF070C16)],
-        ),
-      ),
+    return SceneStage(
+      enabled: _settings?.sceneEnabled ?? true,
+      mood: _mood,
       child: Scaffold(
         backgroundColor: Colors.transparent,
         appBar: AppBar(
@@ -1102,6 +1204,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _persona;
   late bool _memoryEnabled;
   late bool _proactiveEnabled;
+  late bool _sceneEnabled;
   late int _proactiveIdleMinutes;
   List<String> _models = const [];
   bool _loadingModels = false;
@@ -1116,6 +1219,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _persona = TextEditingController(text: widget.initial.persona);
     _memoryEnabled = widget.initial.memoryEnabled;
     _proactiveEnabled = widget.initial.proactiveEnabled;
+    _sceneEnabled = widget.initial.sceneEnabled;
     _proactiveIdleMinutes = widget.initial.proactiveIdleMinutes;
     _loadModels();
   }
@@ -1162,6 +1266,7 @@ class _SettingsPageState extends State<SettingsPage> {
       memoryEnabled: _memoryEnabled,
       proactiveEnabled: _proactiveEnabled,
       proactiveIdleMinutes: _proactiveIdleMinutes,
+      sceneEnabled: _sceneEnabled,
     ));
   }
 
@@ -1253,6 +1358,13 @@ class _SettingsPageState extends State<SettingsPage> {
             onChanged: (v) => setState(() => _memoryEnabled = v),
             title: const Text('自动记忆'),
             subtitle: const Text('每几轮抽取关于你的长期事实，存在本机'),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _sceneEnabled,
+            onChanged: (v) => setState(() => _sceneEnabled = v),
+            title: const Text('场景模式（玻璃后的客厅）'),
+            subtitle: const Text('把对话印在玻璃上，背后是房间。往 assets/scene/ 放视频就自动换成真实画面'),
           ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,

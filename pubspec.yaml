@@ -38,6 +38,7 @@ dependencies:
   shared_preferences: ^2.5.5
   speech_to_text: ^7.4.0
   image_picker: ^1.2.2
+  video_player: ^2.9.5
 
 dev_dependencies:
   flutter_test:
@@ -91,3 +92,6 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+  assets:
+    - assets/scene/
