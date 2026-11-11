@@ -1425,24 +1425,34 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       child: Container(
         margin: const EdgeInsets.only(top: 12, bottom: 6, left: 56),
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * .72),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-          decoration: BoxDecoration(
-            color: accent.withValues(alpha: .26),
-            borderRadius: radius,
-            border: Border.all(color: accent.withValues(alpha: .30), width: 1),
-            boxShadow: [
-              BoxShadow(color: Colors.black.withValues(alpha: .18), blurRadius: 10, offset: const Offset(0, 3)),
-            ],
-          ),
-          child: Text(
-            m.content,
-            textAlign: TextAlign.right,
-            style: const TextStyle(
-              fontSize: 14.5,
-              height: 1.45,
-              color: Color(0xFFEAF4FF),
-              shadows: [Shadow(color: Color(0xAA000000), blurRadius: 6, offset: Offset(0, 1))],
+        child: ClipRRect(
+          borderRadius: radius,
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [accent.withValues(alpha: .30), accent.withValues(alpha: .12)],
+                ),
+                borderRadius: radius,
+                border: Border.all(color: Colors.white.withValues(alpha: .26), width: 1),
+                boxShadow: [
+                  BoxShadow(color: Colors.black.withValues(alpha: .22), blurRadius: 14, offset: const Offset(0, 4)),
+                ],
+              ),
+              child: Text(
+                m.content,
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                  fontSize: 14.5,
+                  height: 1.45,
+                  color: Colors.white,
+                  shadows: [Shadow(color: Color(0xAA000000), blurRadius: 6, offset: Offset(0, 1))],
+                ),
+              ),
             ),
           ),
         ),
@@ -1493,13 +1503,21 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
-        child: Container(
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(26),
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+            child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
           decoration: BoxDecoration(
-            color: const Color(0xFF131E32),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Colors.white.withValues(alpha: .16), Colors.white.withValues(alpha: .06)],
+            ),
             borderRadius: BorderRadius.circular(26),
-            border: Border.all(color: Colors.white.withValues(alpha: .08)),
-            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: .25), blurRadius: 14, offset: const Offset(0, 4))],
+            border: Border.all(color: Colors.white.withValues(alpha: .22)),
+            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: .22), blurRadius: 18, offset: const Offset(0, 6))],
           ),
           child: Row(
             children: [
@@ -1551,6 +1569,8 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
                       ),
                     ),
             ],
+          ),
+        ),
           ),
         ),
       ),
