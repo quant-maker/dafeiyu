@@ -17,6 +17,13 @@ class ProviderPreset {
 
 const kProviders = <ProviderPreset>[
   ProviderPreset(
+    id: 'gateway',
+    name: 'AI Gateway（公司网关）',
+    baseUrl: 'https://agent.oasis.mountainxplorer.ai/ai-gateway/openai/v1',
+    models: ['jk/dsv4.1-flash', 'jk/kimi-k3'],
+    note: '需内网或 VPN，手机可能连不上',
+  ),
+  ProviderPreset(
     id: 'deepseek',
     name: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
