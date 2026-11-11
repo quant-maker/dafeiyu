@@ -1103,146 +1103,121 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         final m = _messages[i];
         final mine = m.role == 'user';
         final typing = !mine && _busy && _waitingFirstToken && m.content.isEmpty;
-        return _glassBubble(m, mine, typing);
+        return _message(m, mine, typing, i);
       },
     );
   }
 
-  /// Bubbles are back (people know how to read them), but they are made of
-  /// the same material as the pane: translucent tint + hairline light edge.
-  Widget _glassBubble(Message m, bool mine, bool typing) {
-    const accent = Color(0xFF4AA3FF);
-    final radius = BorderRadius.only(
-      topLeft: const Radius.circular(18),
-      topRight: const Radius.circular(18),
-      bottomLeft: Radius.circular(mine ? 18 : 6),
-      bottomRight: Radius.circular(mine ? 6 : 18),
+  /// Her replies are film subtitles etched into the glass: no bubble, layered
+  /// shadows for legibility. The owner keeps a compact pill so the back-and-forth
+  /// still reads like a conversation.
+  Widget _message(Message m, bool mine, bool typing, int index) {
+    final showLabel = !mine && (index == 0 || _messages[index - 1].role != 'assistant');
+    final isNewest = index == _messages.length - 1;
+
+    if (mine) return _userPill(m, typing);
+
+    final text = SelectableText(
+      m.content,
+      style: _etched(size: 19.5),
     );
 
-    final content = Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
+    final body = Padding(
+      padding: EdgeInsets.only(left: 6, right: 44, top: showLabel ? 14 : 10, bottom: 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
         children: [
-          if (m.imageBase64 != null) ...[
-            ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Image.memory(base64Decode(m.imageBase64!), width: 200, fit: BoxFit.cover),
-            ),
-            const SizedBox(height: 8),
-          ],
-          if (typing)
-            _TypingDots(controller: _dots)
-          else
-            SelectableText(
-              m.content,
-              style: const TextStyle(
-                fontSize: 15.5,
-                height: 1.5,
-                color: Colors.white,
-                shadows: [Shadow(color: Color(0xCC000000), blurRadius: 8, offset: Offset(0, 1))],
+          if (showLabel)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '🐟',
+                    style: TextStyle(fontSize: 12, shadows: _etchShadows),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    '大肥鱼',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      letterSpacing: 1.6,
+                      fontWeight: FontWeight.w600,
+                      color: const Color(0xFF9FD0FF).withValues(alpha: .9),
+                      shadows: _etchShadows,
+                    ),
+                  ),
+                ],
               ),
             ),
+          typing ? _TypingDots(controller: _dots) : text,
         ],
       ),
     );
 
-    final glass = ClipRRect(
-      borderRadius: radius,
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-        child: Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: mine
-                  ? [accent.withValues(alpha: .34), accent.withValues(alpha: .16)]
-                  : [Colors.white.withValues(alpha: .16), Colors.white.withValues(alpha: .05)],
-            ),
-            borderRadius: radius,
-            border: Border.all(
-              color: mine ? accent.withValues(alpha: .45) : Colors.white.withValues(alpha: .22),
-              width: 1,
-            ),
-            boxShadow: [
-              BoxShadow(color: Colors.black.withValues(alpha: .25), blurRadius: 16, offset: const Offset(0, 5)),
-            ],
-          ),
-          child: content,
-        ),
-      ),
-    );
-
-    return Align(
-      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 5),
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * .78),
-        child: glass,
-      ),
+    if (!isNewest) return body;
+    // The newest line breathes in instead of popping.
+    return TweenAnimationBuilder<double>(
+      key: ValueKey(m),
+      tween: Tween(begin: .62, end: 1),
+      duration: const Duration(milliseconds: 1400),
+      curve: Curves.easeOut,
+      builder: (_, value, child) => Opacity(opacity: value, child: child),
+      child: body,
     );
   }
 
-  Widget _bubble(Message m, bool mine, bool typing) {
-    const accent = Color(0xFF4AA3FF);
-    final bubble = Container(
-      margin: EdgeInsets.only(bottom: 12, left: mine ? 44 : 0, right: mine ? 0 : 44),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-      decoration: BoxDecoration(
-        gradient: mine
-            ? const LinearGradient(
-                colors: [Color(0xFF3E86E0), Color(0xFF2A5FB4)], begin: Alignment.topLeft, end: Alignment.bottomRight)
-            : null,
-        color: mine ? null : const Color(0xFF16223A),
-        borderRadius: BorderRadius.only(
-          topLeft: const Radius.circular(18),
-          topRight: const Radius.circular(18),
-          bottomLeft: Radius.circular(mine ? 18 : 6),
-          bottomRight: Radius.circular(mine ? 6 : 18),
-        ),
-        border: mine ? null : Border.all(color: Colors.white.withValues(alpha: .06)),
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: .18), blurRadius: 8, offset: const Offset(0, 2))],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (m.imageBase64 != null) ...[
-            ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Image.memory(base64Decode(m.imageBase64!), width: 200, fit: BoxFit.cover),
-            ),
-            const SizedBox(height: 8),
-          ],
-          if (typing)
-            _TypingDots(controller: _dots)
-          else
-            SelectableText(m.content, style: const TextStyle(fontSize: 14.5, height: 1.45, color: Colors.white)),
-        ],
-      ),
-    );
+  static const _etchShadows = [
+    Shadow(color: Color(0xCC000000), blurRadius: 3, offset: Offset(0, 1)),
+    Shadow(color: Color(0xB3000000), blurRadius: 16, offset: Offset(0, 3)),
+    Shadow(color: Color(0x33FFFFFF), blurRadius: 1, offset: Offset(0, -1)),
+  ];
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisAlignment: mine ? MainAxisAlignment.end : MainAxisAlignment.start,
-      children: [
-        if (!mine) ...[
-          Container(
-            width: 28,
-            height: 28,
-            margin: const EdgeInsets.only(top: 2),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: accent.withValues(alpha: .16),
-              border: Border.all(color: accent.withValues(alpha: .4)),
+  /// Text that looks engraved into the pane: dark lower edge, lit upper edge,
+  /// and a faint cool halo.
+  TextStyle _etched({required double size}) => TextStyle(
+        fontSize: size,
+        height: 1.62,
+        letterSpacing: .2,
+        fontWeight: FontWeight.w500,
+        color: const Color(0xFFF4F9FF),
+        shadows: _etchShadows,
+      );
+
+  Widget _userPill(Message m, bool typing) {
+    const accent = Color(0xFF4AA3FF);
+    final radius = BorderRadius.circular(16);
+    return Align(
+      alignment: Alignment.centerRight,
+      child: Container(
+        margin: const EdgeInsets.only(top: 12, bottom: 6, left: 56),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * .72),
+        child: ClipRRect(
+          borderRadius: radius,
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: .20),
+                borderRadius: radius,
+                border: Border.all(color: accent.withValues(alpha: .38), width: 1),
+              ),
+              child: Text(
+                m.content,
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                  fontSize: 14.5,
+                  height: 1.45,
+                  color: Color(0xFFEAF4FF),
+                  shadows: [Shadow(color: Color(0xAA000000), blurRadius: 6, offset: Offset(0, 1))],
+                ),
+              ),
             ),
-            child: const Center(child: Text('🐟', style: TextStyle(fontSize: 14))),
           ),
-          const SizedBox(width: 8),
-        ],
-        Flexible(child: bubble),
-      ],
+        ),
+      ),
     );
   }
 
