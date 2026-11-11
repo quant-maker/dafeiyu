@@ -1617,7 +1617,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _keys = Map.of(widget.initial.apiKeys);
     _asr = TextEditingController(text: widget.initial.asrModel);
     _proactiveIdleMinutes = widget.initial.proactiveIdleMinutes;
-    _loadModels();
+    if (widget.initial.apiKey.trim().isNotEmpty) _loadModels();
   }
 
   @override
@@ -1726,6 +1726,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 _key.text = _keys[id] ?? '';
                 _models = const [];
               });
+              if (_key.text.trim().isNotEmpty) _loadModels();
             },
           ),
           const SizedBox(height: 16),
@@ -1736,6 +1737,10 @@ class _SettingsPageState extends State<SettingsPage> {
           TextField(
             controller: _key,
             obscureText: true,
+            onSubmitted: (_) => _loadModels(),
+            onEditingComplete: () {
+              if (_key.text.trim().isNotEmpty && _models.isEmpty) _loadModels();
+            },
             decoration: InputDecoration(
               hintText: 'sk-…',
               suffixIcon: IconButton(
@@ -1754,20 +1759,43 @@ class _SettingsPageState extends State<SettingsPage> {
               padding: const EdgeInsets.only(bottom: 6),
               child: Text('拉取模型失败：$_modelError', style: const TextStyle(fontSize: 11, color: Color(0xFFFF9A9A))),
             ),
-          DropdownButtonFormField<String>(
-            initialValue: _models.contains(_model.text) ? _model.text : null,
-            isExpanded: true,
-            decoration: const InputDecoration(hintText: '选择模型（填好 Key 后点右边刷新）'),
-            items: _models
-                .map((id) => DropdownMenuItem(
-                      value: id,
-                      child: Text(id, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
-                    ))
-                .toList(),
-            onChanged: (v) {
-              if (v != null) setState(() => _model.text = v);
-            },
-          ),
+          Builder(builder: (context) {
+            final preset = providerById(_provider);
+            final options = _models.isNotEmpty ? _models : preset.models;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                DropdownButtonFormField<String>(
+                  initialValue: options.contains(_model.text) ? _model.text : null,
+                  isExpanded: true,
+                  decoration: InputDecoration(
+                    hintText: _models.isEmpty ? '先填 Key（会自动拉取）' : '选择模型',
+                    suffixIcon: _loadingModels
+                        ? const Padding(
+                            padding: EdgeInsets.all(12),
+                            child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                          )
+                        : null,
+                  ),
+                  items: options
+                      .map((id) => DropdownMenuItem(
+                            value: id,
+                            child: Text(id, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+                          ))
+                      .toList(),
+                  onChanged: (v) {
+                    if (v != null) setState(() => _model.text = v);
+                  },
+                ),
+                if (_models.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6, left: 4),
+                    child: Text('已从该厂商拉取 ${_models.length} 个模型',
+                        style: const TextStyle(fontSize: 11, color: Color(0xFF7FD39A))),
+                  ),
+              ],
+            );
+          }),
           const SizedBox(height: 8),
           TextField(
             controller: _model,
