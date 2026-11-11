@@ -5,7 +5,10 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
@@ -45,6 +48,8 @@ class Settings {
   bool proactiveEnabled;
   bool sceneEnabled;
   String embeddingModel;
+  String asrModel;
+  bool ttsEnabled;
   int proactiveIdleMinutes;
 
   Settings({
@@ -56,6 +61,8 @@ class Settings {
     this.proactiveEnabled = false,
     this.sceneEnabled = true,
     this.embeddingModel = 'Qwen/Qwen3-Embedding-4B',
+    this.asrModel = 'gpt-4o-mini-transcribe',
+    this.ttsEnabled = false,
     this.proactiveIdleMinutes = 8,
   });
 
@@ -83,6 +90,8 @@ class Settings {
       proactiveEnabled: j['proactiveEnabled'] as bool? ?? false,
       sceneEnabled: j['sceneEnabled'] as bool? ?? true,
       embeddingModel: pick(j['embeddingModel'] as String?, 'Qwen/Qwen3-Embedding-4B'),
+      asrModel: pick(j['asrModel'] as String?, 'gpt-4o-mini-transcribe'),
+      ttsEnabled: j['ttsEnabled'] as bool? ?? false,
       proactiveIdleMinutes: (j['proactiveIdleMinutes'] as num?)?.toInt() ?? 8,
     );
   }
@@ -100,6 +109,8 @@ class Settings {
         'proactiveEnabled': proactiveEnabled,
         'sceneEnabled': sceneEnabled,
         'embeddingModel': embeddingModel,
+        'asrModel': asrModel,
+        'ttsEnabled': ttsEnabled,
         'proactiveIdleMinutes': proactiveIdleMinutes,
       }),
     );
@@ -230,6 +241,10 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   final _scroll = ScrollController();
   final List<Message> _messages = [];
   final stt.SpeechToText _speech = stt.SpeechToText();
+  final AudioRecorder _recorder = AudioRecorder();
+  final FlutterTts _tts = FlutterTts();
+  bool _recording = false;
+  String? _recordPath;
   Memory _memory = Memory();
   Archive _archive = Archive();
   int _summarized = 0;
@@ -343,8 +358,52 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   // ---------------- voice ----------------
 
   Future<void> _toggleVoice() async {
-    if (_listening) {
-      await _speech.stop();
+    if (_recording) {
+      await _finishRecording();
+      return;
+    }
+    final s = _settings;
+    if (s == null) return;
+    if (s.apiKey.isEmpty) {
+      setState(() => _error = '语音需要先在设置里填 API Key（走网关转写）');
+      return;
+    }
+    try {
+      if (!await _recorder.hasPermission()) {
+        setState(() => _error = '没有麦克风权限');
+        return;
+      }
+      final dir = await getTemporaryDirectory();
+      final path = '${dir.path}/feiyu_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      await _recorder.start(const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 64000), path: path);
+      setState(() {
+        _recording = true;
+        _listening = true;
+        _recordPath = path;
+        _voiceHint = '正在录音…再点一次结束';
+        _error = null;
+      });
+    } catch (e) {
+      setState(() {
+        _recording = false;
+        _listening = false;
+        _error = '录音启动失败：$e';
+      });
+    }
+  }
+
+  Future<void> _finishRecording() async {
+    final s = _settings;
+    setState(() {
+      _recording = false;
+      _voiceHint = '正在转写…';
+    });
+    String? path;
+    try {
+      path = await _recorder.stop();
+    } catch (_) {}
+    path ??= _recordPath;
+    if (path == null || s == null) {
       setState(() {
         _listening = false;
         _voiceHint = '';
@@ -352,41 +411,44 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       return;
     }
     try {
-      final ok = await _speech.initialize(
-        onError: (e) => setState(() {
+      final text = await _transcribe(s, path);
+      if (!mounted) return;
+      if (text != null && text.trim().isNotEmpty) {
+        setState(() {
           _listening = false;
-          _error = '语音识别不可用：${e.errorMsg}';
-        }),
-        onStatus: (s) {
-          if ((s == 'done' || s == 'notListening') && mounted) setState(() => _listening = false);
-        },
-      );
-      if (!ok) {
-        setState(() => _error = '这台设备没有可用的语音识别');
-        return;
+          _voiceHint = '';
+          _input.text = text.trim();
+        });
+        await _send();
+      } else {
+        setState(() {
+          _listening = false;
+          _voiceHint = '';
+          _error = '没听清，要不要再说一次？';
+        });
       }
-      setState(() {
-        _listening = true;
-        _voiceHint = '正在听…';
-      });
-      await _speech.listen(
-        localeId: 'zh_CN',
-        onResult: (r) {
-          if (r.recognizedWords.isEmpty) return;
-          setState(() {
-            _input.text = r.recognizedWords;
-            _voiceHint = r.finalResult ? '' : r.recognizedWords;
-          });
-          if (r.finalResult) setState(() => _listening = false);
-        },
-        listenOptions: stt.SpeechListenOptions(partialResults: true, cancelOnError: true),
-      );
     } catch (e) {
       setState(() {
         _listening = false;
-        _error = '语音启动失败：$e';
+        _voiceHint = '';
+        _error = '转写失败：$e';
       });
     }
+  }
+
+  /// Uploads the clip to the gateway's transcription endpoint.
+  Future<String?> _transcribe(Settings s, String path) async {
+    final base = s.baseUrl.endsWith('/') ? s.baseUrl.substring(0, s.baseUrl.length - 1) : s.baseUrl;
+    final req = http.MultipartRequest('POST', Uri.parse('$base/audio/transcriptions'))
+      ..headers['authorization'] = 'Bearer ${s.apiKey}'
+      ..fields['model'] = s.asrModel
+      ..fields['language'] = 'zh'
+      ..files.add(await http.MultipartFile.fromPath('file', path, filename: 'voice.m4a'));
+    final streamed = await req.send().timeout(const Duration(seconds: 60));
+    final body = await streamed.stream.bytesToString();
+    if (streamed.statusCode != 200) throw Exception('HTTP ${streamed.statusCode}: ${body.substring(0, body.length.clamp(0, 160))}');
+    final j = jsonDecode(body) as Map<String, dynamic>;
+    return (j['text'] ?? '') as String?;
   }
 
   // ---------------- image ----------------
@@ -532,6 +594,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
     final image = _pendingImage;
     _input.clear();
+    unawaited(_tts.stop());
     setState(() {
       _error = null;
       _busy = true;
@@ -601,6 +664,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           if (target.content.trim().isEmpty) _messages.removeLast();
         });
         unawaited(ChatStore.save(_messages));
+        if (target.content.trim().isNotEmpty) unawaited(_speak(target.content));
         unawaited(_maybeSummarize(s));
         _resetIdleTimer();
       }
@@ -927,6 +991,24 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     final keyState = s.apiKey.isEmpty ? 'key✗' : 'key✓${s.apiKey.length}';
     final host = Uri.tryParse(s.baseUrl)?.host ?? s.baseUrl;
     return '${s.model.isEmpty ? '未选模型' : s.model} · $keyState · $host';
+  }
+
+  // ---------------- speech out ----------------
+
+  Future<void> _speak(String text) async {
+    final s = _settings;
+    if (s == null || !s.ttsEnabled || text.trim().isEmpty) return;
+    try {
+      await _tts.stop();
+      await _tts.setLanguage('zh-CN');
+      await _tts.setSpeechRate(0.52);
+      await _tts.setPitch(1.05);
+      // Speak the first couple of sentences; long essays get tiring to hear.
+      final spoken = text.length > 220 ? '${text.substring(0, 220)}…' : text;
+      await _tts.speak(spoken);
+    } catch (e) {
+      debugPrint('[feiyu] tts FAILED: $e');
+    }
   }
 
   // ---------------- memory layers ----------------
@@ -1500,6 +1582,8 @@ class _SettingsPageState extends State<SettingsPage> {
   late bool _memoryEnabled;
   late bool _proactiveEnabled;
   late bool _sceneEnabled;
+  late bool _ttsEnabled;
+  late final TextEditingController _asr;
   late int _proactiveIdleMinutes;
   List<String> _models = const [];
   bool _loadingModels = false;
@@ -1515,6 +1599,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _memoryEnabled = widget.initial.memoryEnabled;
     _proactiveEnabled = widget.initial.proactiveEnabled;
     _sceneEnabled = widget.initial.sceneEnabled;
+    _ttsEnabled = widget.initial.ttsEnabled;
+    _asr = TextEditingController(text: widget.initial.asrModel);
     _proactiveIdleMinutes = widget.initial.proactiveIdleMinutes;
     _loadModels();
   }
@@ -1522,6 +1608,7 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void dispose() {
     _base.dispose();
+    _asr.dispose();
     _key.dispose();
     _model.dispose();
     _persona.dispose();
@@ -1562,6 +1649,8 @@ class _SettingsPageState extends State<SettingsPage> {
       proactiveEnabled: _proactiveEnabled,
       proactiveIdleMinutes: _proactiveIdleMinutes,
       sceneEnabled: _sceneEnabled,
+      ttsEnabled: _ttsEnabled,
+      asrModel: _asr.text.trim(),
     ));
   }
 
@@ -1654,6 +1743,19 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('自动记忆'),
             subtitle: const Text('每几轮抽取关于你的长期事实，存在本机'),
           ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _ttsEnabled,
+            onChanged: (v) => setState(() => _ttsEnabled = v),
+            title: const Text('语音朗读'),
+            subtitle: const Text('回答完用系统语音念出来（前三句左右）'),
+          ),
+          const _Label('语音识别模型（走网关转写，不需要手机自带识别）'),
+          TextField(
+            controller: _asr,
+            decoration: const InputDecoration(hintText: 'gpt-4o-mini-transcribe', isDense: true),
+          ),
+          const SizedBox(height: 12),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             value: _sceneEnabled,
