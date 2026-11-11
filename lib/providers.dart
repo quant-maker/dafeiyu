@@ -17,6 +17,13 @@ class ProviderPreset {
 
 const kProviders = <ProviderPreset>[
   ProviderPreset(
+    id: 'iquest',
+    name: 'iQuest CodePlan',
+    baseUrl: 'https://codeplan.iquestlab.com/api/predict/converge.converge/v1',
+    models: [],
+    note: '内部平台，模型名填好 Key 后自动拉取',
+  ),
+  ProviderPreset(
     id: 'gateway',
     name: 'AI Gateway（公司网关）',
     baseUrl: 'https://agent.oasis.mountainxplorer.ai/ai-gateway/openai/v1',
