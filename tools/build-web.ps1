@@ -36,10 +36,17 @@ try {
   Flutter @('pub', 'get') | Select-Object -Last 4 | ForEach-Object { Log "  $_" }
 
   # Sync source and inject the gateway key from the local launcher (never printed).
+  # NOTE: Copy-Item nests a directory when the destination already exists, so the
+  # destination is removed first — otherwise a stale copy keeps getting compiled.
   Copy-Item (Join-Path $ws 'feiyu_app_src\main.dart') (Join-Path $app 'lib\main.dart') -Force
-Copy-Item (Join-Path $ws 'feiyu_app_src\memory') (Join-Path $app 'lib\memory') -Recurse -Force -ErrorAction SilentlyContinue
-Copy-Item (Join-Path $ws 'feiyu_app_src\feeds') (Join-Path $app 'lib\feeds') -Recurse -Force -ErrorAction SilentlyContinue
-  if (Test-Path (Join-Path $ws 'feiyu_app_src\scene')) { Copy-Item (Join-Path $ws 'feiyu_app_src\scene') (Join-Path $app 'lib\scene') -Recurse -Force }
+  foreach ($sub in @('scene', 'memory', 'feeds')) {
+    $src = Join-Path $ws "feiyu_app_src\$sub"
+    if (-not (Test-Path $src)) { continue }
+    $dst = Join-Path $app "lib\$sub"
+    Remove-Item $dst -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item $src $dst -Recurse -Force
+  }
+  Copy-Item (Join-Path $ws 'feiyu_app_src\providers.dart') (Join-Path $app 'lib\providers.dart') -Force
   $wrapper = Join-Path $env:USERPROFILE '.local\bin\claude'
   $mm = if (Test-Path $wrapper) { Select-String -Path $wrapper -Pattern '^GW_TOKEN="\$\{GW_TOKEN:-(.+)\}"' } else { $null }
   if ($mm) {

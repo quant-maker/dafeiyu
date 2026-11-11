@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
@@ -123,22 +124,11 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
   }
 
   Widget _background() {
-    if (_available['room'] == true) {
-      return _video('room');
-    }
-    // A still photo beats any painted placeholder; drop room.jpg in place.
+    if (_available['room'] == true) return _video('room');
     return Stack(
       fit: StackFit.expand,
       children: [
-        const DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0xFF1A2438), Color(0xFF0C1626), Color(0xFF070B14)],
-            ),
-          ),
-        ),
+        const ColoredBox(color: Color(0xFF0A0F18)),
         Image.asset(
           'assets/scene/room.jpg',
           fit: BoxFit.cover,
@@ -173,21 +163,20 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
     );
   }
 
-  /// Light only: a vignette so text near the edges stays readable, plus a slow
-  /// ambient glow. No pane, no blur, no border.
+  /// Light only: a slight edge vignette so text stays readable. No pane.
   Widget _atmosphere() {
     return IgnorePointer(
       child: DecoratedBox(
         decoration: BoxDecoration(
-          gradient: RadialGradient(
-            center: const Alignment(-0.3, -0.5),
-            radius: 1.15,
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
             colors: [
-              const Color(0x1A10E0FF),
-              const Color(0x00000000),
-              Colors.black.withValues(alpha: .42),
+              Colors.black.withValues(alpha: .62),
+              Colors.black.withValues(alpha: .46),
+              Colors.black.withValues(alpha: .66),
             ],
-            stops: const [0.0, 0.55, 1.0],
+            stops: const [0.0, 0.48, 1.0],
           ),
         ),
       ),
@@ -195,53 +184,242 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
   }
 }
 
-/// Placeholder room painted with code, used until real assets exist.
+/// A room drawn with code: window, shelves, sofa, rug, plant, floor planks and
+/// film grain. Detail is what stops it from reading as "blurry gradient".
 class _RoomPainter extends CustomPainter {
   _RoomPainter({required this.breathe}) : super(repaint: breathe);
   final Animation<double> breathe;
+  final math.Random _rnd = math.Random(7);
 
   @override
   void paint(Canvas canvas, Size size) {
     final t = breathe.value;
     final w = size.width;
     final h = size.height;
+    final horizon = h * 0.66;
 
-    final floor = Paint()
-      ..shader = const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [Color(0xFF17202F), Color(0xFF0B1018)],
-      ).createShader(Rect.fromLTWH(0, h * .62, w, h * .38));
-    canvas.drawRect(Rect.fromLTWH(0, h * .62, w, h * .38), floor);
-
-    final glow = Paint()
-      ..shader = RadialGradient(
-        colors: [const Color(0x335BC8FF), const Color(0x00000000)],
-        radius: .8,
-      ).createShader(Rect.fromCircle(center: Offset(w * .78, h * .26), radius: w * .7));
-    canvas.drawCircle(Offset(w * .78, h * .26), w * .7, glow);
-
-    final sofa = Paint()..color = const Color(0xFF1E2A3D);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(Rect.fromLTWH(w * .12, h * .58, w * .56, h * .20), const Radius.circular(26)),
-      sofa,
-    );
-    final cushion = Paint()..color = const Color(0xFF27354C);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(Rect.fromLTWH(w * .15, h * .60, w * .50, h * .10), const Radius.circular(18)),
-      cushion,
+    // ---- wall ----
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, w, horizon),
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF20304A), Color(0xFF172235), Color(0xFF121A28)],
+        ).createShader(Rect.fromLTWH(0, 0, w, horizon)),
     );
 
-    final lamp = Offset(w * .12, h * .40);
-    canvas.drawCircle(lamp, 26, Paint()..color = const Color(0xFF6E5A38).withValues(alpha: .55));
+    // ---- floor planks (perspective) ----
+    final floor = Rect.fromLTWH(0, horizon, w, h - horizon);
+    canvas.drawRect(
+      floor,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF2A2118), Color(0xFF17120D)],
+        ).createShader(floor),
+    );
+    final plank = Paint()
+      ..color = const Color(0xFF000000).withValues(alpha: .28)
+      ..strokeWidth = 1;
+    for (var i = -6; i <= 6; i++) {
+      final x = w * .5 + i * w * .11;
+      canvas.drawLine(Offset(w * .5 + i * w * .06, horizon), Offset(x, h), plank);
+    }
+    for (var k = 1; k <= 3; k++) {
+      final y = horizon + (h - horizon) * (k * k / 12.0);
+      canvas.drawLine(Offset(0, y), Offset(w, y), plank..strokeWidth = .8);
+    }
+
+    // ---- window (right), bright and sharp ----
+    final win = Rect.fromLTWH(w * .60, h * .10, w * .34, h * .40);
+    canvas.drawRect(
+      win,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF8FD0FF), Color(0xFF4E86C6), Color(0xFF2B4A72)],
+        ).createShader(win),
+    );
+    final frame = Paint()
+      ..color = const Color(0xFF0E1622)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5;
+    canvas.drawRect(win, frame);
+    final mullion = Paint()
+      ..color = const Color(0xFF0E1622)
+      ..strokeWidth = 4;
+    canvas.drawLine(Offset(win.center.dx, win.top), Offset(win.center.dx, win.bottom), mullion);
+    canvas.drawLine(Offset(win.left, win.center.dy), Offset(win.right, win.center.dy), mullion);
+
+    // light spilling from the window onto the floor
+    canvas.drawPath(
+      Path()
+        ..moveTo(win.left, win.bottom)
+        ..lineTo(win.right, win.bottom)
+        ..lineTo(win.right + w * .10, h)
+        ..lineTo(win.left - w * .16, h)
+        ..close(),
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [const Color(0x33CFE9FF), const Color(0x00CFE9FF)],
+        ).createShader(Rect.fromLTWH(0, win.bottom, w, h - win.bottom)),
+    );
+
+    // ---- bookshelf (left) ----
+    final shelf = Rect.fromLTWH(w * .02, h * .20, w * .30, h * .46);
+    canvas.drawRect(shelf, Paint()..color = const Color(0xFF1B140D));
+    final shelfLine = Paint()
+      ..color = const Color(0xFF3A2A1A)
+      ..strokeWidth = 3;
+    for (var i = 0; i <= 4; i++) {
+      final y = shelf.top + shelf.height * (i / 4);
+      canvas.drawLine(Offset(shelf.left, y), Offset(shelf.right, y), shelfLine);
+    }
+    final bookColors = [
+      const Color(0xFF7A4B3A),
+      const Color(0xFF4B6A58),
+      const Color(0xFF56507E),
+      const Color(0xFF8A6A3C),
+    ];
+    var seed = 3;
+    for (var row = 0; row < 4; row++) {
+      var x = shelf.left + 8;
+      final y0 = shelf.top + shelf.height * (row / 4) + 4;
+      final rowH = shelf.height / 4 - 10;
+      while (x < shelf.right - 14) {
+        final bw = 6.0 + (seed * 7 % 9);
+        final bh = rowH * (0.62 + ((seed * 13) % 30) / 100);
+        canvas.drawRect(
+          Rect.fromLTWH(x, y0 + (rowH - bh), bw.toDouble(), bh),
+          Paint()..color = bookColors[seed % bookColors.length],
+        );
+        x += bw + 3;
+        seed++;
+      }
+    }
+
+    // ---- rug ----
+    final rugCenter = Offset(w * .52, h * .88);
+    canvas.drawOval(
+      Rect.fromCenter(center: rugCenter, width: w * .72, height: h * .16),
+      Paint()..color = const Color(0xFF2C2436),
+    );
+    for (var i = 1; i <= 3; i++) {
+      canvas.drawOval(
+        Rect.fromCenter(center: rugCenter, width: w * .72 - i * w * .09, height: h * .16 - i * h * .022),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4
+          ..color = const Color(0xFF4B3E5C).withValues(alpha: .8),
+      );
+    }
+
+    // ---- sofa ----
+    final sofa = Rect.fromLTWH(w * .14, h * .58, w * .52, h * .20);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(sofa, const Radius.circular(22)),
+      Paint()..color = const Color(0xFF2B3A52),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTWH(sofa.left, sofa.top, sofa.width, sofa.height * .42), const Radius.circular(18)),
+      Paint()..color = const Color(0xFF35486400),
+    );
+    final cushion = Paint()..color = const Color(0xFF3B5070);
+    for (var i = 0; i < 2; i++) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(sofa.left + 14 + i * (sofa.width / 2), sofa.top + 12, sofa.width / 2 - 20, sofa.height * .40),
+          const Radius.circular(12),
+        ),
+        cushion,
+      );
+    }
+    // armrests
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTWH(sofa.left - 8, sofa.top + 6, 16, sofa.height), const Radius.circular(8)),
+      Paint()..color = const Color(0xFF26334A),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTWH(sofa.right - 8, sofa.top + 6, 16, sofa.height), const Radius.circular(8)),
+      Paint()..color = const Color(0xFF26334A),
+    );
+
+    // ---- plant ----
+    final pot = Rect.fromLTWH(w * .72, h * .70, w * .09, h * .075);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(pot, const Radius.circular(6)),
+      Paint()..color = const Color(0xFF6B4A35),
+    );
+    final leaf = Paint()..color = const Color(0xFF3C6B4A);
+    for (var i = 0; i < 6; i++) {
+      final angle = -math.pi / 2 + (i - 2.5) * 0.42;
+      final base = Offset(pot.center.dx, pot.top);
+      final tip = base + Offset(math.cos(angle) * h * .10, math.sin(angle) * h * .10);
+      canvas.drawPath(
+        Path()
+          ..moveTo(base.dx, base.dy)
+          ..quadraticBezierTo(
+            (base.dx + tip.dx) / 2 + math.cos(angle + 1.2) * 12,
+            (base.dy + tip.dy) / 2 + math.sin(angle + 1.2) * 12,
+            tip.dx,
+            tip.dy,
+          )
+          ..quadraticBezierTo(
+            (base.dx + tip.dx) / 2 - math.cos(angle + 1.2) * 12,
+            (base.dy + tip.dy) / 2 - math.sin(angle + 1.2) * 12,
+            base.dx,
+            base.dy,
+          ),
+        leaf,
+      );
+    }
+
+    // ---- floor lamp with warm halo ----
+    final lampX = w * .10;
+    final lampTop = h * .34;
+    canvas.drawLine(
+      Offset(lampX, lampTop + 16),
+      Offset(lampX, h * .72),
+      Paint()
+        ..color = const Color(0xFF3A3A44)
+        ..strokeWidth = 3,
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(lampX - 22, lampTop + 14)
+        ..lineTo(lampX + 22, lampTop + 14)
+        ..lineTo(lampX + 14, lampTop - 16)
+        ..lineTo(lampX - 14, lampTop - 16)
+        ..close(),
+      Paint()..color = const Color(0xFFE8C98A),
+    );
     canvas.drawCircle(
-      lamp,
-      110 + t * 16,
+      Offset(lampX, lampTop + 2),
+      90 + t * 14,
       Paint()
         ..shader = RadialGradient(
-          colors: [const Color(0x33FFD79A), const Color(0x00FFD79A)],
-        ).createShader(Rect.fromCircle(center: lamp, radius: 120 + t * 16)),
+          colors: [
+            const Color(0x44FFD9A0),
+            const Color(0x11FFD9A0),
+            const Color(0x00FFD9A0),
+          ],
+          stops: const [0.0, 0.55, 1.0],
+        ).createShader(Rect.fromCircle(center: Offset(lampX, lampTop), radius: 104 + t * 14)),
     );
+
+    // ---- film grain: high frequency detail kills the "smooth blur" look ----
+    final grain = Paint();
+    for (var i = 0; i < 900; i++) {
+      final x = _rnd.nextDouble() * w;
+      final y = _rnd.nextDouble() * h;
+      grain.color = Colors.white.withValues(alpha: _rnd.nextDouble() * .05);
+      canvas.drawCircle(Offset(x, y), _rnd.nextDouble() * .9, grain);
+    }
   }
 
   @override
