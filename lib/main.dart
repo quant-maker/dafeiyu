@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import 'feeds/footprints.dart';
+import 'providers.dart';
 import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'scene/scene_stage.dart';
@@ -49,6 +50,8 @@ class Settings {
   bool sceneEnabled;
   String embeddingModel;
   String asrModel;
+  String provider;
+  Map<String, String> apiKeys;
   bool ttsEnabled;
   int proactiveIdleMinutes;
 
@@ -62,6 +65,8 @@ class Settings {
     this.sceneEnabled = true,
     this.embeddingModel = 'Qwen/Qwen3-Embedding-4B',
     this.asrModel = 'gpt-4o-mini-transcribe',
+    this.provider = 'deepseek',
+    this.apiKeys = const {},
     this.ttsEnabled = false,
     this.proactiveIdleMinutes = 8,
   });
@@ -72,11 +77,13 @@ class Settings {
     final sp = await SharedPreferences.getInstance();
     final raw = sp.getString(_k);
     if (raw == null) {
+      final preset = providerById('deepseek');
       return Settings(
-        baseUrl: defaultBaseUrl(),
+        baseUrl: preset.baseUrl,
         apiKey: kKeyInjected ? kInjectedKey : '',
-        model: kDefaultModel,
+        model: preset.models.first,
         persona: kPresetPersona,
+        provider: preset.id,
       );
     }
     final j = jsonDecode(raw) as Map<String, dynamic>;
@@ -91,6 +98,8 @@ class Settings {
       sceneEnabled: j['sceneEnabled'] as bool? ?? true,
       embeddingModel: pick(j['embeddingModel'] as String?, 'Qwen/Qwen3-Embedding-4B'),
       asrModel: pick(j['asrModel'] as String?, 'gpt-4o-mini-transcribe'),
+      provider: pick(j['provider'] as String?, 'deepseek'),
+      apiKeys: ((j['apiKeys'] as Map?) ?? const {}).map((k, v) => MapEntry(k.toString(), v.toString())),
       ttsEnabled: j['ttsEnabled'] as bool? ?? false,
       proactiveIdleMinutes: (j['proactiveIdleMinutes'] as num?)?.toInt() ?? 8,
     );
@@ -110,6 +119,8 @@ class Settings {
         'sceneEnabled': sceneEnabled,
         'embeddingModel': embeddingModel,
         'asrModel': asrModel,
+        'provider': provider,
+        'apiKeys': apiKeys,
         'ttsEnabled': ttsEnabled,
         'proactiveIdleMinutes': proactiveIdleMinutes,
       }),
@@ -1583,6 +1594,8 @@ class _SettingsPageState extends State<SettingsPage> {
   late bool _proactiveEnabled;
   late bool _sceneEnabled;
   late bool _ttsEnabled;
+  late String _provider;
+  late Map<String, String> _keys;
   late final TextEditingController _asr;
   late int _proactiveIdleMinutes;
   List<String> _models = const [];
@@ -1600,6 +1613,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _proactiveEnabled = widget.initial.proactiveEnabled;
     _sceneEnabled = widget.initial.sceneEnabled;
     _ttsEnabled = widget.initial.ttsEnabled;
+    _provider = widget.initial.provider;
+    _keys = Map.of(widget.initial.apiKeys);
     _asr = TextEditingController(text: widget.initial.asrModel);
     _proactiveIdleMinutes = widget.initial.proactiveIdleMinutes;
     _loadModels();
@@ -1650,6 +1665,8 @@ class _SettingsPageState extends State<SettingsPage> {
       proactiveIdleMinutes: _proactiveIdleMinutes,
       sceneEnabled: _sceneEnabled,
       ttsEnabled: _ttsEnabled,
+      provider: _provider,
+      apiKeys: {..._keys, _provider: _key.text.trim()},
       asrModel: _asr.text.trim(),
     ));
   }
@@ -1687,6 +1704,31 @@ class _SettingsPageState extends State<SettingsPage> {
               ],
             ),
           ),
+          const _Label('厂商'),
+          DropdownButtonFormField<String>(
+            initialValue: _provider,
+            isExpanded: true,
+            items: kProviders
+                .map((p) => DropdownMenuItem(
+                      value: p.id,
+                      child: Text('${p.name}${p.note.isEmpty ? '' : '  ·  ${p.note}'}',
+                          overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+                    ))
+                .toList(),
+            onChanged: (id) {
+              if (id == null) return;
+              final preset = providerById(id);
+              setState(() {
+                _keys[_provider] = _key.text.trim();
+                _provider = id;
+                if (preset.baseUrl.isNotEmpty) _base.text = preset.baseUrl;
+                if (preset.models.isNotEmpty) _model.text = preset.models.first;
+                _key.text = _keys[id] ?? '';
+                _models = const [];
+              });
+            },
+          ),
+          const SizedBox(height: 16),
           const _Label('Base URL（OpenAI 兼容，不带 /chat/completions）'),
           TextField(controller: _base, decoration: const InputDecoration(hintText: 'https://…/v1')),
           const SizedBox(height: 16),
