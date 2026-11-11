@@ -37,6 +37,8 @@ try {
 
   # Sync source and inject the gateway key from the local launcher (never printed).
   Copy-Item (Join-Path $ws 'feiyu_app_src\main.dart') (Join-Path $app 'lib\main.dart') -Force
+Copy-Item (Join-Path $ws 'feiyu_app_src\memory') (Join-Path $app 'lib\memory') -Recurse -Force -ErrorAction SilentlyContinue
+  if (Test-Path (Join-Path $ws 'feiyu_app_src\scene')) { Copy-Item (Join-Path $ws 'feiyu_app_src\scene') (Join-Path $app 'lib\scene') -Recurse -Force }
   $wrapper = Join-Path $env:USERPROFILE '.local\bin\claude'
   $mm = if (Test-Path $wrapper) { Select-String -Path $wrapper -Pattern '^GW_TOKEN="\$\{GW_TOKEN:-(.+)\}"' } else { $null }
   if ($mm) {
@@ -50,7 +52,7 @@ try {
   }
 
   Log 'build web --release'
-  Flutter @('build', 'web', '--release') | ForEach-Object { Log "  $_" }
+  Flutter @('build', 'web', '--release', '--pwa-strategy=none') | ForEach-Object { Log "  $_" }
   $out = Join-Path $app 'build\web'
   if (Test-Path (Join-Path $out 'index.html')) {
     $size = [math]::Round(((Get-ChildItem $out -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB, 1)
