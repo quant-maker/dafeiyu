@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
@@ -128,15 +127,26 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
 
   Widget _background() {
     if (_available['room'] == true) return const ColoredBox(color: Color(0xFF0A0F1A));
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF1A2438), Color(0xFF0C1626), Color(0xFF070B14)],
+    // A still photo beats any painted placeholder; drop room.jpg in place.
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        const DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF1A2438), Color(0xFF0C1626), Color(0xFF070B14)],
+            ),
+          ),
         ),
-      ),
-      child: CustomPaint(painter: _RoomPainter(breathe: _breathe)),
+        Image.asset(
+          'assets/scene/room.jpg',
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) =>
+              CustomPaint(painter: _RoomPainter(breathe: _breathe)),
+        ),
+      ],
     );
   }
 
@@ -207,17 +217,15 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
   /// The glass sheet the conversation is printed on.
   Widget _glass() {
     return ClipRect(
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 3, sigmaY: 3),
-        child: Container(
+      child: Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
               colors: [
-                Colors.white.withValues(alpha: .045),
-                Colors.white.withValues(alpha: .012),
-                Colors.black.withValues(alpha: .10),
+                Colors.white.withValues(alpha: .035),
+                Colors.white.withValues(alpha: .008),
+                Colors.black.withValues(alpha: .06),
               ],
             ),
             border: Border(
@@ -272,7 +280,6 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
             ],
           ),
         ),
-      ),
     );
   }
 }
