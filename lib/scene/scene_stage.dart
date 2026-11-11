@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import 'package:video_player/video_player.dart';
 
 /// Where the character currently is in her little life.
@@ -39,6 +40,11 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
   late final AnimationController _breathe;
   late final AnimationController _fade;
 
+  /// Normalised tilt in [-1, 1]; drives a small parallax shift.
+  final ValueNotifier<Offset> _tilt = ValueNotifier(Offset.zero);
+  StreamSubscription<AccelerometerEvent>? _accel;
+  Offset _target = Offset.zero;
+
   static const _candidates = <String, String>{
     'room': 'assets/scene/room.mp4',
     'idle': 'assets/scene/idle.mp4',
@@ -53,6 +59,24 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
     _breathe = AnimationController(vsync: this, duration: const Duration(seconds: 4))..repeat(reverse: true);
     _fade = AnimationController(vsync: this, duration: const Duration(milliseconds: 600), value: 1);
     _loadClips();
+    _listenTilt();
+  }
+
+  /// Phones: accelerometer tilt. Desktop/web: pointer position (handled by the
+  /// Listener in build). Both feed the same smoothed value.
+  void _listenTilt() {
+    try {
+      _accel = accelerometerEventStream().listen((e) {
+        // x is left/right, y is up/down (m/s^2). ~4 m/s^2 is a comfortable range.
+        _target = Offset((e.x / 4).clamp(-1.0, 1.0), (e.y / 4).clamp(-1.0, 1.0));
+        _tilt.value = Offset(
+          _tilt.value.dx * .82 + _target.dx * .18,
+          _tilt.value.dy * .82 + _target.dy * .18,
+        );
+      }, onError: (_) {});
+    } catch (_) {
+      // No sensors: pointer parallax still applies.
+    }
   }
 
   Future<void> _loadClips() async {
@@ -101,6 +125,8 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    _accel?.cancel();
+    _tilt.dispose();
     for (final c in _clips.values) {
       c.dispose();
     }
@@ -112,14 +138,44 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     if (!widget.enabled) return widget.child;
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        _background(),
-        if (_available['idle'] == true) _character(),
-        _atmosphere(),
-        widget.child,
-      ],
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerHover: (event) {
+        final box = context.findRenderObject() as RenderBox?;
+        final size = box?.size;
+        if (size == null) return;
+        final nx = (event.localPosition.dx / size.width - .5) * 2;
+        final ny = (event.localPosition.dy / size.height - .5) * 2;
+        _target = Offset(nx.clamp(-1.0, 1.0), ny.clamp(-1.0, 1.0));
+        _tilt.value = Offset(
+          _tilt.value.dx * .75 + _target.dx * .25,
+          _tilt.value.dy * .75 + _target.dy * .25,
+        );
+      },
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          _parallax(_background()),
+          if (_available['idle'] == true) _parallax(_character(), amount: .6),
+          _atmosphere(),
+          widget.child,
+        ],
+      ),
+    );
+  }
+
+  /// Slight over-scale + counter-shift so the room feels layered behind the text.
+  Widget _parallax(Widget child, {double amount = 1.0}) {
+    return ValueListenableBuilder<Offset>(
+      valueListenable: _tilt,
+      builder: (context, off, inner) => Transform.scale(
+        scale: 1.10,
+        child: Transform.translate(
+          offset: Offset(-off.dx * 16 * amount, -off.dy * 12 * amount),
+          child: inner,
+        ),
+      ),
+      child: child,
     );
   }
 
