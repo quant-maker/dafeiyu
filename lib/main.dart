@@ -234,7 +234,6 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   Archive _archive = Archive();
   int _summarized = 0;
   List<Footprint> _footprints = const [];
-  int _turnsSinceFootprint = 0;
 
   Settings? _settings;
   bool _busy = false;
@@ -483,6 +482,24 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         },
       },
     },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'footprint',
+        'description': '把这一刻收进「足迹」——只有当你真的觉得这段对话里有值得记住的瞬间时才用：'
+            '一次心意、一个新发现、一句戳中的话、一个共同的小胜利。'
+            '普通寒暄、查资料、日常问答都不要记。宁可不记，也别凑数。',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'title': {'type': 'string', 'description': '不超过 12 字的小标题，像日记的抬头'},
+            'body': {'type': 'string', 'description': '不超过 60 字，用你自己的口吻写下这个瞬间'},
+            'mood': {'type': 'string', 'description': '一个能代表当时心情的表情'},
+          },
+          'required': ['title', 'body'],
+        },
+      },
+    },
   ];
 
   String _systemPrompt(Settings s) {
@@ -494,10 +511,13 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           '如果对方问起以前聊过的事，先看记录和记忆；确实没有就直说没印象，不要编。',
       if (s.memoryEnabled) _memory.asPrompt(),
       _recentDigest(),
-      '你可以调用两个工具：'
+      '你可以调用三个工具：'
           '① fetch_url 抓网页正文（查资料、看链接时用，别凭空猜网页内容）；'
           '② remember 把值得长期记住的事记下来（对方的偏好、约定、正在做的项目、重要经历），'
-          '一条一句话，不要记流水账。抓到内容后用自己的话答，别整段照抄。',
+          '一条一句话，不要记流水账；'
+          '③ footprint 把当下这一刻收进足迹——只有真的打动你、值得多年后回看的瞬间才用，'
+          '普通对话不用记。宁可漏记，也不要为了记录而记录。'
+          '抓到内容后用自己的话答，别整段照抄。',
     ].where((x) => x.isNotEmpty).join('\n\n');
   }
 
@@ -582,14 +602,6 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         });
         unawaited(ChatStore.save(_messages));
         unawaited(_maybeSummarize(s));
-        _turnsSinceFootprint++;
-        if (_turnsSinceFootprint >= 6) {
-          _turnsSinceFootprint = 0;
-          unawaited(_distillFootprint(s).then((f) {
-            if (f != null && mounted) setState(() => _footprints = [f, ..._footprints]);
-            return null;
-          }));
-        }
         _resetIdleTimer();
       }
     }
@@ -694,6 +706,23 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
 
   Future<String> _execTool(String name, Map<String, dynamic> args) async {
+    if (name == 'footprint') {
+      final title = (args['title'] ?? '').toString().trim();
+      final body = (args['body'] ?? '').toString().trim();
+      if (title.isEmpty || body.isEmpty) return '足迹需要标题和内容';
+      final f = Footprint(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        at: DateTime.now(),
+        title: title.length > 20 ? title.substring(0, 20) : title,
+        body: body.length > 120 ? body.substring(0, 120) : body,
+        mood: (args['mood'] ?? '🐟').toString(),
+      );
+      final next = [f, ..._footprints];
+      if (mounted) setState(() => _footprints = next);
+      await FootprintStore.save(next);
+      debugPrint('[feiyu] footprint kept: $title');
+      return '已收进足迹：$title';
+    }
     if (name == 'recall') {
       final q = (args['query'] ?? '').toString().trim();
       if (q.isEmpty) return '请给出检索关键词';
