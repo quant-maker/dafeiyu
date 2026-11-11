@@ -1193,27 +1193,24 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       child: Container(
         margin: const EdgeInsets.only(top: 12, bottom: 6, left: 56),
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * .72),
-        child: ClipRRect(
-          borderRadius: radius,
-          child: BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-              decoration: BoxDecoration(
-                color: accent.withValues(alpha: .20),
-                borderRadius: radius,
-                border: Border.all(color: accent.withValues(alpha: .38), width: 1),
-              ),
-              child: Text(
-                m.content,
-                textAlign: TextAlign.right,
-                style: const TextStyle(
-                  fontSize: 14.5,
-                  height: 1.45,
-                  color: Color(0xFFEAF4FF),
-                  shadows: [Shadow(color: Color(0xAA000000), blurRadius: 6, offset: Offset(0, 1))],
-                ),
-              ),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            color: accent.withValues(alpha: .26),
+            borderRadius: radius,
+            border: Border.all(color: accent.withValues(alpha: .30), width: 1),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withValues(alpha: .18), blurRadius: 10, offset: const Offset(0, 3)),
+            ],
+          ),
+          child: Text(
+            m.content,
+            textAlign: TextAlign.right,
+            style: const TextStyle(
+              fontSize: 14.5,
+              height: 1.45,
+              color: Color(0xFFEAF4FF),
+              shadows: [Shadow(color: Color(0xAA000000), blurRadius: 6, offset: Offset(0, 1))],
             ),
           ),
         ),
