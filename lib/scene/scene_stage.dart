@@ -208,16 +208,16 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
   Widget _glass() {
     return ClipRect(
       child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        filter: ui.ImageFilter.blur(sigmaX: 3, sigmaY: 3),
         child: Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
               colors: [
-                Colors.white.withValues(alpha: .10),
-                Colors.white.withValues(alpha: .03),
-                Colors.white.withValues(alpha: .06),
+                Colors.white.withValues(alpha: .045),
+                Colors.white.withValues(alpha: .012),
+                Colors.black.withValues(alpha: .10),
               ],
             ),
             border: Border(
@@ -246,6 +246,24 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
                           Colors.white.withValues(alpha: .0),
                         ],
                       ),
+                    ),
+                  ),
+                ),
+              ),
+              // A soft dark band behind the middle of the screen keeps lyrics
+              // legible over a bright room without hiding it.
+              IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.black.withValues(alpha: .22),
+                        Colors.black.withValues(alpha: .05),
+                        Colors.black.withValues(alpha: .26),
+                      ],
+                      stops: const [0.0, 0.45, 1.0],
                     ),
                   ),
                 ),

@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
+import 'memory/archive.dart';
 import 'scene/scene_stage.dart';
 
 // Injected by tools/build-web.ps1 / build-apk.ps1 from the local launcher.
@@ -40,6 +41,7 @@ class Settings {
   bool memoryEnabled;
   bool proactiveEnabled;
   bool sceneEnabled;
+  String embeddingModel;
   int proactiveIdleMinutes;
 
   Settings({
@@ -50,6 +52,7 @@ class Settings {
     this.memoryEnabled = true,
     this.proactiveEnabled = false,
     this.sceneEnabled = true,
+    this.embeddingModel = 'Qwen/Qwen3-Embedding-4B',
     this.proactiveIdleMinutes = 8,
   });
 
@@ -76,6 +79,7 @@ class Settings {
       memoryEnabled: j['memoryEnabled'] as bool? ?? true,
       proactiveEnabled: j['proactiveEnabled'] as bool? ?? false,
       sceneEnabled: j['sceneEnabled'] as bool? ?? true,
+      embeddingModel: pick(j['embeddingModel'] as String?, 'Qwen/Qwen3-Embedding-4B'),
       proactiveIdleMinutes: (j['proactiveIdleMinutes'] as num?)?.toInt() ?? 8,
     );
   }
@@ -92,6 +96,7 @@ class Settings {
         'memoryEnabled': memoryEnabled,
         'proactiveEnabled': proactiveEnabled,
         'sceneEnabled': sceneEnabled,
+        'embeddingModel': embeddingModel,
         'proactiveIdleMinutes': proactiveIdleMinutes,
       }),
     );
@@ -223,6 +228,8 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   final List<Message> _messages = [];
   final stt.SpeechToText _speech = stt.SpeechToText();
   Memory _memory = Memory();
+  Archive _archive = Archive();
+  int _summarized = 0;
 
   Settings? _settings;
   bool _busy = false;
@@ -266,6 +273,11 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       if (mounted) setState(() => _memory = m);
     }).catchError((Object e) {
       debugPrint('[feiyu] memory load FAILED: $e');
+    });
+    Archive.load().then((a) {
+      if (mounted) setState(() => _archive = a);
+    }).catchError((Object e) {
+      debugPrint('[feiyu] archive load FAILED: $e');
     });
     ChatStore.load().then((history) {
       if (!mounted || history.isEmpty) return;
@@ -446,6 +458,21 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         },
       },
     },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'recall',
+        'description': '检索以前聊过的内容（超过最近几十轮的旧对话、往日的摘要）。'
+            '当对方问起很久以前的事、或你需要确认某个旧细节时用它。',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'query': {'type': 'string', 'description': '要查找的关键词或一句话，例如：机械键盘 偏好'},
+          },
+          'required': ['query'],
+        },
+      },
+    },
   ];
 
   String _systemPrompt(Settings s) {
@@ -456,6 +483,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       '现在是 $today。下面的对话记录可能跨越好几天，注意日期。'
           '如果对方问起以前聊过的事，先看记录和记忆；确实没有就直说没印象，不要编。',
       if (s.memoryEnabled) _memory.asPrompt(),
+      _recentDigest(),
       '你可以调用两个工具：'
           '① fetch_url 抓网页正文（查资料、看链接时用，别凭空猜网页内容）；'
           '② remember 把值得长期记住的事记下来（对方的偏好、约定、正在做的项目、重要经历），'
@@ -543,6 +571,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           if (target.content.trim().isEmpty) _messages.removeLast();
         });
         unawaited(ChatStore.save(_messages));
+        unawaited(_maybeSummarize(s));
         _resetIdleTimer();
       }
     }
@@ -647,6 +676,14 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
 
   Future<String> _execTool(String name, Map<String, dynamic> args) async {
+    if (name == 'recall') {
+      final q = (args['query'] ?? '').toString().trim();
+      if (q.isEmpty) return '请给出检索关键词';
+      if (mounted) setState(() => _activity = '正在翻旧账…');
+      final hit = await _recall(q);
+      if (mounted) setState(() => _activity = '');
+      return hit;
+    }
     if (name == 'remember') {
       final fact = (args['fact'] ?? '').toString().trim();
       if (fact.isEmpty) return '没有可记的内容';
@@ -845,6 +882,80 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     return '${s.model.isEmpty ? '未选模型' : s.model} · $keyState · $host';
   }
 
+  // ---------------- memory layers ----------------
+
+  Embedder _embedder(Settings s) =>
+      Embedder(baseUrl: s.baseUrl, apiKey: s.apiKey, model: s.embeddingModel);
+
+  /// The last two archive entries of today, always visible to the model.
+  String _recentDigest() {
+    if (_archive.entries.isEmpty) return '';
+    final now = DateTime.now();
+    final key = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    final todays = _archive.entries.where((e) => e.day == key).toList();
+    final pick = todays.length > 2 ? todays.sublist(todays.length - 2) : todays;
+    if (pick.isEmpty) return '';
+    return '今天早些时候的摘要：\n' + pick.map((e) => '- ${e.text}').join('\n');
+  }
+
+  /// Compress the backlog into one archive paragraph when it grows too long.
+  Future<void> _maybeSummarize(Settings s) async {
+    final pending = _messages.length - _summarized;
+    if (pending < 20) return;
+    final slice = _messages.sublist(_summarized, _messages.length - 4);
+    if (slice.isEmpty) return;
+    final transcript = slice
+        .where((m) => m.content.trim().isNotEmpty)
+        .map((m) => '${m.role == 'user' ? '主人' : '我'}：${m.content}')
+        .join('\n');
+    if (transcript.trim().isEmpty) return;
+
+    try {
+      final base = s.baseUrl.endsWith('/') ? s.baseUrl.substring(0, s.baseUrl.length - 1) : s.baseUrl;
+      final res = await http
+          .post(
+            Uri.parse('$base/chat/completions'),
+            headers: {'content-type': 'application/json', 'authorization': 'Bearer ${s.apiKey}'},
+            body: jsonEncode({
+              'model': s.model,
+              'stream': false,
+              'messages': [
+                {
+                  'role': 'system',
+                  'content': '把这段对话压缩成一段摘要，供以后检索：写清聊了什么、结论或决定、'
+                      '以及对方透露的偏好或正在做的事。第三人称，客观，不超过 200 字。不要寒暄。'
+                },
+                {'role': 'user', 'content': transcript},
+              ],
+            }),
+          )
+          .timeout(const Duration(seconds: 60));
+      if (res.statusCode != 200) return;
+      final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final summary = ((j['choices'] as List).first['message'] as Map)['content'] as String? ?? '';
+      if (summary.trim().isEmpty) return;
+
+      final now = DateTime.now();
+      final day = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      final vector = await _embedder(s).embed(summary) ?? const <double>[];
+      await _archive.add(ArchiveEntry(day: day, text: summary.trim(), vector: vector));
+      _summarized = _messages.length - 4;
+      debugPrint('[feiyu] archived ${summary.length} chars');
+      if (mounted) setState(() {});
+    } catch (e) {
+      debugPrint('[feiyu] summarize FAILED: $e');
+    }
+  }
+
+  Future<String> _recall(String query) async {
+    final s = _settings;
+    if (s == null) return '还没有设置，无法检索';
+    final vector = await _embedder(s).embed(query);
+    final hits = _archive.search(vector, query, k: 3);
+    if (hits.isEmpty) return '没有找到相关的旧记录';
+    return '找到这些旧记录：\n' + hits.map((e) => '【${e.day}】${e.text}').join('\n\n');
+  }
+
   // ---------------- UI ----------------
 
   @override
@@ -985,14 +1096,60 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   Widget _messageList() {
     return ListView.builder(
       controller: _scroll,
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      padding: const EdgeInsets.fromLTRB(30, 56, 30, 24),
       itemCount: _messages.length,
       itemBuilder: (context, i) {
         final m = _messages[i];
         final mine = m.role == 'user';
         final typing = !mine && _busy && _waitingFirstToken && m.content.isEmpty;
-        return _bubble(m, mine, typing);
+        return _lyric(m, mine, typing, i);
       },
+    );
+  }
+
+  /// Lyrics-style line: no bubbles. The newest line is brightest; older lines
+  /// fade upward like a music player.
+  Widget _lyric(Message m, bool mine, bool typing, int index) {
+    final fromBottom = (_messages.length - 1 - index).clamp(0, 24);
+    final fade = fromBottom == 0 ? 1.0 : (0.60 - fromBottom * 0.055).clamp(0.14, 0.60);
+    const shadows = [
+      Shadow(color: Color(0xCC000000), blurRadius: 14, offset: Offset(0, 2)),
+      Shadow(color: Color(0x88000000), blurRadius: 4, offset: Offset(0, 1)),
+    ];
+
+    if (typing) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 18),
+        child: Center(child: _TypingDots(controller: _dots)),
+      );
+    }
+
+    return Padding(
+      padding: EdgeInsets.only(top: mine ? 16 : 10, bottom: mine ? 6 : 10),
+      child: Column(
+        crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.center,
+        children: [
+          if (m.imageBase64 != null) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: Image.memory(base64Decode(m.imageBase64!), height: 170, fit: BoxFit.cover),
+            ),
+            const SizedBox(height: 10),
+          ],
+          Text(
+            m.content,
+            textAlign: mine ? TextAlign.right : TextAlign.center,
+            style: TextStyle(
+              fontSize: mine ? 15 : 19.5,
+              height: 1.55,
+              letterSpacing: .2,
+              fontWeight: mine ? FontWeight.w400 : FontWeight.w500,
+              color: Colors.white.withValues(alpha: fade * (mine ? .78 : 1)),
+              shadows: shadows,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
