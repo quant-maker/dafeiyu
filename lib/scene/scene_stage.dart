@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:video_player/video_player.dart';
 
@@ -22,11 +23,15 @@ class SceneStage extends StatefulWidget {
   final Widget child;
   final bool enabled;
 
+  /// 0 = leave the room as bright as it is, 1 = nearly black.
+  final double dim;
+
   const SceneStage({
     super.key,
     required this.mood,
     required this.child,
     this.enabled = true,
+    this.dim = .5,
   });
 
   @override
@@ -42,6 +47,12 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
 
   /// Normalised tilt in [-1, 1]; drives a small parallax shift.
   final ValueNotifier<Offset> _tilt = ValueNotifier(Offset.zero);
+  String? _roomImage;
+  static const _imageCandidates = [
+    'assets/scene/room.webp',
+    'assets/scene/room.jpg',
+    'assets/scene/room.png',
+  ];
   StreamSubscription<AccelerometerEvent>? _accel;
   Offset _target = Offset.zero;
 
@@ -60,6 +71,20 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
     _fade = AnimationController(vsync: this, duration: const Duration(milliseconds: 600), value: 1);
     _loadClips();
     _listenTilt();
+    _detectRoomImage();
+  }
+
+  /// Any of room.webp / room.jpg / room.png wins over the painted fallback.
+  Future<void> _detectRoomImage() async {
+    for (final path in _imageCandidates) {
+      try {
+        await rootBundle.load(path);
+        if (mounted) setState(() => _roomImage = path);
+        return;
+      } catch (_) {
+        // try the next one
+      }
+    }
   }
 
   /// Phones: accelerometer tilt. Desktop/web: pointer position (handled by the
@@ -181,15 +206,21 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
 
   Widget _background() {
     if (_available['room'] == true) return _video('room');
+    final image = _roomImage;
     return Stack(
       fit: StackFit.expand,
       children: [
         const ColoredBox(color: Color(0xFF0A0F18)),
-        Image.asset(
-          'assets/scene/room.jpg',
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => CustomPaint(painter: _RoomPainter(breathe: _breathe)),
-        ),
+        if (image != null)
+          Image.asset(
+            image,
+            fit: BoxFit.cover,
+            alignment: Alignment.center,
+            filterQuality: FilterQuality.medium,
+            errorBuilder: (_, __, ___) => CustomPaint(painter: _RoomPainter(breathe: _breathe)),
+          )
+        else
+          CustomPaint(painter: _RoomPainter(breathe: _breathe)),
       ],
     );
   }
@@ -221,6 +252,11 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
 
   /// Light only: a slight edge vignette so text stays readable. No pane.
   Widget _atmosphere() {
+    final d = widget.dim.clamp(0.0, 1.0);
+    // Edges stay a bit darker than the middle so the text block reads cleanly.
+    final top = (.10 + d * .62).clamp(0.0, .92);
+    final mid = (.04 + d * .46).clamp(0.0, .92);
+    final bottom = (.14 + d * .62).clamp(0.0, .92);
     return IgnorePointer(
       child: DecoratedBox(
         decoration: BoxDecoration(
@@ -228,9 +264,9 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors: [
-              Colors.black.withValues(alpha: .62),
-              Colors.black.withValues(alpha: .46),
-              Colors.black.withValues(alpha: .66),
+              Colors.black.withValues(alpha: top),
+              Colors.black.withValues(alpha: mid),
+              Colors.black.withValues(alpha: bottom),
             ],
             stops: const [0.0, 0.48, 1.0],
           ),

@@ -48,6 +48,7 @@ class Settings {
   bool memoryEnabled;
   bool proactiveEnabled;
   bool sceneEnabled;
+  double sceneDim;
   String embeddingModel;
   String asrModel;
   String provider;
@@ -63,6 +64,7 @@ class Settings {
     this.memoryEnabled = true,
     this.proactiveEnabled = false,
     this.sceneEnabled = true,
+    this.sceneDim = .5,
     this.embeddingModel = 'Qwen/Qwen3-Embedding-4B',
     this.asrModel = 'gpt-4o-mini-transcribe',
     this.provider = 'deepseek',
@@ -96,6 +98,7 @@ class Settings {
       memoryEnabled: j['memoryEnabled'] as bool? ?? true,
       proactiveEnabled: j['proactiveEnabled'] as bool? ?? false,
       sceneEnabled: j['sceneEnabled'] as bool? ?? true,
+      sceneDim: (j['sceneDim'] as num?)?.toDouble() ?? .5,
       embeddingModel: pick(j['embeddingModel'] as String?, 'Qwen/Qwen3-Embedding-4B'),
       asrModel: pick(j['asrModel'] as String?, 'gpt-4o-mini-transcribe'),
       provider: pick(j['provider'] as String?, 'deepseek'),
@@ -117,6 +120,7 @@ class Settings {
         'memoryEnabled': memoryEnabled,
         'proactiveEnabled': proactiveEnabled,
         'sceneEnabled': sceneEnabled,
+        'sceneDim': sceneDim,
         'embeddingModel': embeddingModel,
         'asrModel': asrModel,
         'provider': provider,
@@ -1189,6 +1193,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   Widget build(BuildContext context) {
     return SceneStage(
       enabled: _settings?.sceneEnabled ?? true,
+      dim: _settings?.sceneDim ?? .5,
       mood: _mood,
       child: Scaffold(
         backgroundColor: Colors.transparent,
@@ -1593,6 +1598,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late bool _memoryEnabled;
   late bool _proactiveEnabled;
   late bool _sceneEnabled;
+  late double _sceneDim;
   late bool _ttsEnabled;
   late String _provider;
   late Map<String, String> _keys;
@@ -1612,6 +1618,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _memoryEnabled = widget.initial.memoryEnabled;
     _proactiveEnabled = widget.initial.proactiveEnabled;
     _sceneEnabled = widget.initial.sceneEnabled;
+    _sceneDim = widget.initial.sceneDim;
     _ttsEnabled = widget.initial.ttsEnabled;
     _provider = widget.initial.provider;
     _keys = Map.of(widget.initial.apiKeys);
@@ -1664,6 +1671,7 @@ class _SettingsPageState extends State<SettingsPage> {
       proactiveEnabled: _proactiveEnabled,
       proactiveIdleMinutes: _proactiveIdleMinutes,
       sceneEnabled: _sceneEnabled,
+      sceneDim: _sceneDim,
       ttsEnabled: _ttsEnabled,
       provider: _provider,
       apiKeys: {..._keys, _provider: _key.text.trim()},
@@ -1830,9 +1838,29 @@ class _SettingsPageState extends State<SettingsPage> {
             contentPadding: EdgeInsets.zero,
             value: _sceneEnabled,
             onChanged: (v) => setState(() => _sceneEnabled = v),
-            title: const Text('场景模式（玻璃后的客厅）'),
-            subtitle: const Text('把对话印在玻璃上，背后是房间。往 assets/scene/ 放视频就自动换成真实画面'),
+            title: const Text('场景模式（背后的房间）'),
+            subtitle: const Text('对话浮在房间画面上。往 assets/scene/ 放 room.webp / room.jpg 就能换成自己的房间'),
           ),
+          if (_sceneEnabled)
+            Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 8),
+              child: Row(
+                children: [
+                  const Text('压暗：', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  Expanded(
+                    child: Slider(
+                      value: _sceneDim,
+                      min: 0,
+                      max: 1,
+                      divisions: 20,
+                      label: '${(_sceneDim * 100).round()}%',
+                      onChanged: (v) => setState(() => _sceneDim = v),
+                    ),
+                  ),
+                  Text('${(_sceneDim * 100).round()}%', style: const TextStyle(fontSize: 12)),
+                ],
+              ),
+            ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             value: _proactiveEnabled,
