@@ -36,3 +36,5 @@ Thumbs.db
 git-token.txt
 git-push
 *.token
+# 固定签名：允许提交（个人项目，保证每次更新能覆盖安装）
+!android/keystore/*.jks

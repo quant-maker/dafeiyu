@@ -63,7 +63,9 @@ try {
   Flutter @('pub', 'add', 'http', 'shared_preferences', 'speech_to_text', 'image_picker', 'video_player') | Select-Object -Last 5 | ForEach-Object { Log "  $_" }
   Log 'pub get done'
   Log 'build apk --release'
-  Flutter @('build', 'apk', '--release', '--split-per-abi') | Select-Object -Last 30 | ForEach-Object { Log "  $_" }
+  $bn = (Get-Date).ToString('yyMMddHH')
+  Log "build number: $bn"
+  Flutter @('build', 'apk', '--release', '--split-per-abi', "--build-number=$bn") | Select-Object -Last 30 | ForEach-Object { Log "  $_" }
   if ($LASTEXITCODE -ne 0) { throw 'flutter build apk failed' }
   $apk = Join-Path $app 'build\app\outputs\flutter-apk\app-arm64-v8a-release.apk'
   if (Test-Path $apk) {

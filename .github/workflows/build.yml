@@ -51,7 +51,7 @@ jobs:
       - name: Build APK
         run: |
           set -o pipefail
-          if ! flutter build apk --release --split-per-abi 2>&1 | tee /tmp/build.log; then
+          if ! flutter build apk --release --split-per-abi --build-number=$(date +%y%m%d%H) 2>&1 | tee /tmp/build.log; then
             echo "===== tail ====="; tail -25 /tmp/build.log | sed 's/\r$//'
             grep -n -A 12 -iE 'what went wrong|error:|FAILURE' /tmp/build.log | head -60 | sed 's/\r$//' | while IFS= read -r line; do
               [ -n "$line" ] && echo "::error::$line"

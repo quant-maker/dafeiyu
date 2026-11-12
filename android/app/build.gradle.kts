@@ -26,15 +26,31 @@ android {
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
-        versionCode = flutter.versionCode
-        versionName = flutter.versionName
+        versionCode = (project.findProperty("versionCode") as String?)?.toInt() ?: flutter.versionCode
+        versionName = (project.findProperty("versionName") as String?) ?: flutter.versionName
+    }
+
+    // One fixed key for every build (local + CI). Otherwise each machine signs
+    // with its own debug key and Android refuses to install the update.
+    signingConfigs {
+        create("feiyu") {
+            val ks = file("../keystore/feiyu-release.jks")
+            if (ks.exists()) {
+                storeFile = ks
+                storePassword = "feiyu2026"
+                keyAlias = "feiyu"
+                keyPassword = "feiyu2026"
+            }
+        }
     }
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (file("../keystore/feiyu-release.jks").exists()) {
+                signingConfigs.getByName("feiyu")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
