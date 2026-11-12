@@ -40,6 +40,35 @@ String defaultBaseUrl() {
   return kGatewayBase;
 }
 
+class AsrPreset {
+  final String id;
+  final String name;
+  final String baseUrl;
+  final List<String> models;
+
+  const AsrPreset({required this.id, required this.name, required this.baseUrl, required this.models});
+}
+
+const kAsrPresets = <AsrPreset>[
+  AsrPreset(id: 'same', name: '跟随聊天厂商', baseUrl: '', models: []),
+  AsrPreset(
+    id: 'siliconflow',
+    name: '硅基流动（SenseVoice）',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    models: ['FunAudioLLM/SenseVoiceSmall'],
+  ),
+  AsrPreset(
+    id: 'openai',
+    name: 'OpenAI（Whisper 系列）',
+    baseUrl: 'https://api.openai.com/v1',
+    models: ['gpt-4o-mini-transcribe', 'whisper-1'],
+  ),
+  AsrPreset(id: 'custom', name: '自定义', baseUrl: '', models: []),
+];
+
+AsrPreset asrById(String id) =>
+    kAsrPresets.firstWhere((p) => p.id == id, orElse: () => kAsrPresets.last);
+
 class Settings {
   String baseUrl;
   String apiKey;
@@ -51,6 +80,9 @@ class Settings {
   double sceneDim;
   String embeddingModel;
   String asrModel;
+  String asrPreset;
+  String asrBaseUrl;
+  String asrApiKey;
   String provider;
   Map<String, String> apiKeys;
   bool ttsEnabled;
@@ -67,6 +99,9 @@ class Settings {
     this.sceneDim = .5,
     this.embeddingModel = 'Qwen/Qwen3-Embedding-4B',
     this.asrModel = 'gpt-4o-mini-transcribe',
+    this.asrPreset = 'same',
+    this.asrBaseUrl = '',
+    this.asrApiKey = '',
     this.provider = 'deepseek',
     this.apiKeys = const {},
     this.ttsEnabled = false,
@@ -101,6 +136,9 @@ class Settings {
       sceneDim: (j['sceneDim'] as num?)?.toDouble() ?? .5,
       embeddingModel: pick(j['embeddingModel'] as String?, 'Qwen/Qwen3-Embedding-4B'),
       asrModel: pick(j['asrModel'] as String?, 'gpt-4o-mini-transcribe'),
+      asrPreset: pick(j['asrPreset'] as String?, 'same'),
+      asrBaseUrl: (j['asrBaseUrl'] ?? '') as String? ?? '',
+      asrApiKey: (j['asrApiKey'] ?? '') as String? ?? '',
       provider: pick(j['provider'] as String?, 'deepseek'),
       apiKeys: ((j['apiKeys'] as Map?) ?? const {}).map((k, v) => MapEntry(k.toString(), v.toString())),
       ttsEnabled: j['ttsEnabled'] as bool? ?? false,
@@ -123,6 +161,9 @@ class Settings {
         'sceneDim': sceneDim,
         'embeddingModel': embeddingModel,
         'asrModel': asrModel,
+        'asrPreset': asrPreset,
+        'asrBaseUrl': asrBaseUrl,
+        'asrApiKey': asrApiKey,
         'provider': provider,
         'apiKeys': apiKeys,
         'ttsEnabled': ttsEnabled,
@@ -453,15 +494,26 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
   /// Uploads the clip to the gateway's transcription endpoint.
   Future<String?> _transcribe(Settings s, String path) async {
-    final base = s.baseUrl.endsWith('/') ? s.baseUrl.substring(0, s.baseUrl.length - 1) : s.baseUrl;
+    final asrBase = s.asrBaseUrl.trim().isEmpty ? s.baseUrl : s.asrBaseUrl.trim();
+    final asrKey = s.asrApiKey.trim().isEmpty ? s.apiKey : s.asrApiKey.trim();
+    final base = asrBase.endsWith('/') ? asrBase.substring(0, asrBase.length - 1) : asrBase;
     final req = http.MultipartRequest('POST', Uri.parse('$base/audio/transcriptions'))
-      ..headers['authorization'] = 'Bearer ${s.apiKey}'
+      ..headers['authorization'] = 'Bearer $asrKey'
       ..fields['model'] = s.asrModel
       ..fields['language'] = 'zh'
       ..files.add(await http.MultipartFile.fromPath('file', path, filename: 'voice.m4a'));
     final streamed = await req.send().timeout(const Duration(seconds: 60));
     final body = await streamed.stream.bytesToString();
-    if (streamed.statusCode != 200) throw Exception('HTTP ${streamed.statusCode}: ${body.substring(0, body.length.clamp(0, 160))}');
+    if (streamed.statusCode == 404) {
+      throw Exception('这个地址没有语音转写接口（404）。\n'
+          '去设置 → 语音识别，单独选一个支持转写的服务（比如硅基流动的 SenseVoice）。');
+    }
+    if (streamed.statusCode == 401 || streamed.statusCode == 403) {
+      throw Exception('语音服务的 Key 无效（HTTP ${streamed.statusCode}），检查设置里的语音识别 Key');
+    }
+    if (streamed.statusCode != 200) {
+      throw Exception('HTTP ${streamed.statusCode}: ${body.substring(0, body.length.clamp(0, 160))}');
+    }
     final j = jsonDecode(body) as Map<String, dynamic>;
     return (j['text'] ?? '') as String?;
   }
@@ -1347,7 +1399,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     final showLabel = !mine && (index == 0 || _messages[index - 1].role != 'assistant');
     final isNewest = index == _messages.length - 1;
 
-    if (mine) return _userPill(m, typing);
+    if (mine) return _userLine(m, typing);
 
     final text = SelectableText(
       m.content,
@@ -1417,45 +1469,67 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         shadows: _etchShadows,
       );
 
-  Widget _userPill(Message m, bool typing) {
-    const accent = Color(0xFF4AA3FF);
-    final radius = BorderRadius.circular(16);
-    return Align(
-      alignment: Alignment.centerRight,
-      child: Container(
-        margin: const EdgeInsets.only(top: 12, bottom: 6, left: 56),
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * .72),
-        child: ClipRRect(
-          borderRadius: radius,
-          child: BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+  /// The owner has no bubble either: right-aligned, smaller, cooler, with a
+  /// hairline accent so the two speakers never blur together.
+  Widget _userLine(Message m, bool typing) {
+    const accent = Color(0xFF6FB6FF);
+    final width = MediaQuery.of(context).size.width * .74;
+
+    return Container(
+      margin: const EdgeInsets.only(top: 16, bottom: 8, left: 40),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Flexible(
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [accent.withValues(alpha: .30), accent.withValues(alpha: .12)],
-                ),
-                borderRadius: radius,
-                border: Border.all(color: Colors.white.withValues(alpha: .26), width: 1),
-                boxShadow: [
-                  BoxShadow(color: Colors.black.withValues(alpha: .22), blurRadius: 14, offset: const Offset(0, 4)),
+              constraints: BoxConstraints(maxWidth: width),
+              padding: const EdgeInsets.only(right: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  if (m.imageBase64 != null) ...[
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.memory(
+                        base64Decode(m.imageBase64!),
+                        width: 170,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  if (typing)
+                    _TypingDots(controller: _dots)
+                  else if (m.content.trim().isNotEmpty)
+                    Text(
+                      m.content,
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        height: 1.5,
+                        color: Color(0xFFD6E8FF),
+                        shadows: [
+                          Shadow(color: Color(0xCC000000), blurRadius: 3, offset: Offset(0, 1)),
+                          Shadow(color: Color(0x99000000), blurRadius: 14, offset: Offset(0, 2)),
+                        ],
+                      ),
+                    ),
                 ],
-              ),
-              child: Text(
-                m.content,
-                textAlign: TextAlign.right,
-                style: const TextStyle(
-                  fontSize: 14.5,
-                  height: 1.45,
-                  color: Colors.white,
-                  shadows: [Shadow(color: Color(0xAA000000), blurRadius: 6, offset: Offset(0, 1))],
-                ),
               ),
             ),
           ),
-        ),
+          // hairline accent: reads as "you", without drawing a box
+          Container(
+            width: 2,
+            height: 22,
+            margin: const EdgeInsets.only(top: 4),
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: .75),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1623,6 +1697,9 @@ class _SettingsPageState extends State<SettingsPage> {
   late String _provider;
   late Map<String, String> _keys;
   late final TextEditingController _asr;
+  late final TextEditingController _asrBase;
+  late final TextEditingController _asrKey;
+  late String _asrPreset;
   late int _proactiveIdleMinutes;
   List<String> _models = const [];
   bool _loadingModels = false;
@@ -1643,6 +1720,9 @@ class _SettingsPageState extends State<SettingsPage> {
     _provider = widget.initial.provider;
     _keys = Map.of(widget.initial.apiKeys);
     _asr = TextEditingController(text: widget.initial.asrModel);
+    _asrBase = TextEditingController(text: widget.initial.asrBaseUrl);
+    _asrKey = TextEditingController(text: widget.initial.asrApiKey);
+    _asrPreset = widget.initial.asrPreset;
     _proactiveIdleMinutes = widget.initial.proactiveIdleMinutes;
     if (widget.initial.apiKey.trim().isNotEmpty) _loadModels();
   }
@@ -1651,6 +1731,8 @@ class _SettingsPageState extends State<SettingsPage> {
   void dispose() {
     _base.dispose();
     _asr.dispose();
+    _asrBase.dispose();
+    _asrKey.dispose();
     _key.dispose();
     _model.dispose();
     _persona.dispose();
@@ -1696,6 +1778,9 @@ class _SettingsPageState extends State<SettingsPage> {
       provider: _provider,
       apiKeys: {..._keys, _provider: _key.text.trim()},
       asrModel: _asr.text.trim(),
+      asrPreset: _asrPreset,
+      asrBaseUrl: _asrBase.text.trim(),
+      asrApiKey: _asrKey.text.trim(),
     ));
   }
 
@@ -1848,10 +1933,43 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('语音朗读'),
             subtitle: const Text('回答完用系统语音念出来（前三句左右）'),
           ),
-          const _Label('语音识别模型（走网关转写，不需要手机自带识别）'),
+          const _Label('语音识别服务（录音后上传这里转文字，不用手机自带识别）'),
+          DropdownButtonFormField<String>(
+            initialValue: _asrPreset,
+            isExpanded: true,
+            items: kAsrPresets
+                .map((p) => DropdownMenuItem(
+                      value: p.id,
+                      child: Text(p.name, style: const TextStyle(fontSize: 13)),
+                    ))
+                .toList(),
+            onChanged: (id) {
+              if (id == null) return;
+              final p = asrById(id);
+              setState(() {
+                _asrPreset = id;
+                if (p.baseUrl.isNotEmpty) _asrBase.text = p.baseUrl;
+                if (p.models.isNotEmpty) _asr.text = p.models.first;
+              });
+            },
+          ),
+          if (_asrPreset != 'same') ...[
+            const SizedBox(height: 8),
+            TextField(
+              controller: _asrBase,
+              decoration: const InputDecoration(hintText: 'Base URL，例如 https://api.siliconflow.cn/v1', isDense: true),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _asrKey,
+              obscureText: true,
+              decoration: const InputDecoration(hintText: '语音服务 API Key', isDense: true),
+            ),
+          ],
+          const SizedBox(height: 8),
           TextField(
             controller: _asr,
-            decoration: const InputDecoration(hintText: 'gpt-4o-mini-transcribe', isDense: true),
+            decoration: const InputDecoration(hintText: '转写模型，例如 FunAudioLLM/SenseVoiceSmall', isDense: true),
           ),
           const SizedBox(height: 12),
           SwitchListTile(
