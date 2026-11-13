@@ -101,7 +101,7 @@ class Settings {
     this.memoryEnabled = true,
     this.proactiveEnabled = false,
     this.sceneEnabled = true,
-    this.sceneDim = .5,
+    this.sceneDim = .25,
     this.embeddingModel = 'Qwen/Qwen3-Embedding-4B',
     this.asrModel = 'gpt-4o-mini-transcribe',
     this.asrPreset = 'same',
@@ -143,7 +143,7 @@ class Settings {
       memoryEnabled: j['memoryEnabled'] as bool? ?? true,
       proactiveEnabled: j['proactiveEnabled'] as bool? ?? false,
       sceneEnabled: j['sceneEnabled'] as bool? ?? true,
-      sceneDim: (j['sceneDim'] as num?)?.toDouble() ?? .5,
+      sceneDim: (j['sceneDim'] as num?)?.toDouble() ?? .25,
       embeddingModel: pick(j['embeddingModel'] as String?, 'Qwen/Qwen3-Embedding-4B'),
       asrModel: pick(j['asrModel'] as String?, 'gpt-4o-mini-transcribe'),
       asrPreset: pick(j['asrPreset'] as String?, 'same'),
@@ -1284,7 +1284,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   Widget build(BuildContext context) {
     return SceneStage(
       enabled: _settings?.sceneEnabled ?? true,
-      dim: _settings?.sceneDim ?? .5,
+      dim: _settings?.sceneDim ?? .25,
       mood: _mood,
       child: Scaffold(
         backgroundColor: Colors.transparent,

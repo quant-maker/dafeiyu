@@ -31,7 +31,7 @@ class SceneStage extends StatefulWidget {
     required this.mood,
     required this.child,
     this.enabled = true,
-    this.dim = .5,
+    this.dim = .25,
   });
 
   @override
