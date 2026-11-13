@@ -2121,7 +2121,11 @@ class _SettingsPageState extends State<SettingsPage> {
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 8),
                   child: DropdownButtonFormField<String>(
-                    initialValue: options.contains(_sceneImage) ? _sceneImage : options.first,
+                    initialValue: options.contains(_sceneImage)
+                        ? _sceneImage
+                        : (options.contains('assets/scene/room.webp')
+                            ? 'assets/scene/room.webp'
+                            : options.first),
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: '房间背景', isDense: true),
                     items: options

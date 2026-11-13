@@ -117,6 +117,11 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
   @override
   void didUpdateWidget(covariant SceneStage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // The picker can change which picture is used while the stage is alive.
+    if (oldWidget.image != widget.image) {
+      _roomImage = null;
+      _detectRoomImage();
+    }
     final want = switch (widget.mood) {
       SceneMood.idle => 'idle',
       SceneMood.listening => 'idle',
