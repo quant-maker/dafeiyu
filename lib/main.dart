@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle, AssetManifest;
 import 'package:http/http.dart' as http;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:image_picker/image_picker.dart';
@@ -78,6 +79,7 @@ class Settings {
   bool proactiveEnabled;
   bool sceneEnabled;
   double sceneDim;
+  String sceneImage;
   String embeddingModel;
   String asrModel;
   String asrPreset;
@@ -102,6 +104,7 @@ class Settings {
     this.proactiveEnabled = false,
     this.sceneEnabled = true,
     this.sceneDim = .25,
+    this.sceneImage = '',
     this.embeddingModel = 'Qwen/Qwen3-Embedding-4B',
     this.asrModel = 'gpt-4o-mini-transcribe',
     this.asrPreset = 'same',
@@ -144,6 +147,7 @@ class Settings {
       proactiveEnabled: j['proactiveEnabled'] as bool? ?? false,
       sceneEnabled: j['sceneEnabled'] as bool? ?? true,
       sceneDim: (j['sceneDim'] as num?)?.toDouble() ?? .25,
+      sceneImage: (j['sceneImage'] ?? '') as String? ?? '',
       embeddingModel: pick(j['embeddingModel'] as String?, 'Qwen/Qwen3-Embedding-4B'),
       asrModel: pick(j['asrModel'] as String?, 'gpt-4o-mini-transcribe'),
       asrPreset: pick(j['asrPreset'] as String?, 'same'),
@@ -174,6 +178,7 @@ class Settings {
         'proactiveEnabled': proactiveEnabled,
         'sceneEnabled': sceneEnabled,
         'sceneDim': sceneDim,
+        'sceneImage': sceneImage,
         'embeddingModel': embeddingModel,
         'asrModel': asrModel,
         'asrPreset': asrPreset,
@@ -1285,6 +1290,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     return SceneStage(
       enabled: _settings?.sceneEnabled ?? true,
       dim: _settings?.sceneDim ?? .25,
+      image: _settings?.sceneImage ?? '',
       mood: _mood,
       child: Scaffold(
         backgroundColor: Colors.transparent,
@@ -1732,6 +1738,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late bool _proactiveEnabled;
   late bool _sceneEnabled;
   late double _sceneDim;
+  late String _sceneImage;
   late bool _ttsEnabled;
   late String _provider;
   late Map<String, String> _keys;
@@ -1760,6 +1767,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _proactiveEnabled = widget.initial.proactiveEnabled;
     _sceneEnabled = widget.initial.sceneEnabled;
     _sceneDim = widget.initial.sceneDim;
+    _sceneImage = widget.initial.sceneImage;
     _ttsEnabled = widget.initial.ttsEnabled;
     _provider = widget.initial.provider;
     _keys = Map.of(widget.initial.apiKeys);
@@ -1789,6 +1797,27 @@ class _SettingsPageState extends State<SettingsPage> {
     _model.dispose();
     _persona.dispose();
     super.dispose();
+  }
+
+  /// Every bundled room picture, discovered from the asset manifest.
+  Future<List<String>> _sceneChoices() async {
+    try {
+      final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
+      final rooms = manifest
+          .listAssets()
+          .where((a) => a.startsWith('assets/scene/room') && a.endsWith('.webp'))
+          .toList()
+        ..sort();
+      return rooms;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  String _sceneLabel(String path) {
+    final name = path.split('/').last.replaceAll('.webp', '');
+    if (name == 'room') return '房间（默认）';
+    return name.replaceFirst('room-', '房间·');
   }
 
   Future<void> _loadModels() async {
@@ -1826,6 +1855,7 @@ class _SettingsPageState extends State<SettingsPage> {
       proactiveIdleMinutes: _proactiveIdleMinutes,
       sceneEnabled: _sceneEnabled,
       sceneDim: _sceneDim,
+      sceneImage: _sceneImage,
       ttsEnabled: _ttsEnabled,
       provider: _provider,
       apiKeys: {..._keys, _provider: _key.text.trim()},
@@ -2083,6 +2113,28 @@ class _SettingsPageState extends State<SettingsPage> {
             subtitle: const Text('对话浮在房间画面上。往 assets/scene/ 放 room.webp / room.jpg 就能换成自己的房间'),
           ),
           if (_sceneEnabled)
+            FutureBuilder<List<String>>(
+              future: _sceneChoices(),
+              builder: (context, snap) {
+                final options = snap.data ?? const <String>[];
+                if (options.isEmpty) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: DropdownButtonFormField<String>(
+                    initialValue: options.contains(_sceneImage) ? _sceneImage : options.first,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: '房间背景', isDense: true),
+                    items: options
+                        .map((path) => DropdownMenuItem(
+                              value: path,
+                              child: Text(_sceneLabel(path), style: const TextStyle(fontSize: 13)),
+                            ))
+                        .toList(),
+                    onChanged: (v) => setState(() => _sceneImage = v ?? ''),
+                  ),
+                );
+              },
+            ),
             Padding(
               padding: const EdgeInsets.only(left: 4, bottom: 8),
               child: Row(

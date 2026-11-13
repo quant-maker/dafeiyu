@@ -26,12 +26,16 @@ class SceneStage extends StatefulWidget {
   /// 0 = leave the room as bright as it is, 1 = nearly black.
   final double dim;
 
+  /// Chosen room picture path (empty = auto-detect).
+  final String image;
+
   const SceneStage({
     super.key,
     required this.mood,
     required this.child,
     this.enabled = true,
     this.dim = .25,
+    this.image = '',
   });
 
   @override
@@ -73,6 +77,15 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
   }
 
   Future<void> _detectRoomImage() async {
+    if (widget.image.isNotEmpty) {
+      try {
+        await rootBundle.load(widget.image);
+        if (mounted) setState(() => _roomImage = widget.image);
+        return;
+      } catch (_) {
+        // fall through to auto-detection
+      }
+    }
     for (final path in _imageCandidates) {
       try {
         await rootBundle.load(path);
