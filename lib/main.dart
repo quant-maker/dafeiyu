@@ -81,6 +81,11 @@ class Settings {
   String embeddingModel;
   String asrModel;
   String asrPreset;
+  bool visionEnabled;
+  String visionProvider;
+  String visionBaseUrl;
+  String visionApiKey;
+  String visionModel;
   String asrBaseUrl;
   String asrApiKey;
   String provider;
@@ -100,6 +105,11 @@ class Settings {
     this.embeddingModel = 'Qwen/Qwen3-Embedding-4B',
     this.asrModel = 'gpt-4o-mini-transcribe',
     this.asrPreset = 'same',
+    this.visionEnabled = false,
+    this.visionProvider = 'moonshot',
+    this.visionBaseUrl = 'https://api.moonshot.cn/v1',
+    this.visionApiKey = '',
+    this.visionModel = 'kimi-k3',
     this.asrBaseUrl = '',
     this.asrApiKey = '',
     this.provider = 'deepseek',
@@ -137,6 +147,11 @@ class Settings {
       embeddingModel: pick(j['embeddingModel'] as String?, 'Qwen/Qwen3-Embedding-4B'),
       asrModel: pick(j['asrModel'] as String?, 'gpt-4o-mini-transcribe'),
       asrPreset: pick(j['asrPreset'] as String?, 'same'),
+      visionEnabled: j['visionEnabled'] as bool? ?? false,
+      visionProvider: pick(j['visionProvider'] as String?, 'moonshot'),
+      visionBaseUrl: (j['visionBaseUrl'] ?? '') as String? ?? '',
+      visionApiKey: (j['visionApiKey'] ?? '') as String? ?? '',
+      visionModel: pick(j['visionModel'] as String?, 'kimi-k3'),
       asrBaseUrl: (j['asrBaseUrl'] ?? '') as String? ?? '',
       asrApiKey: (j['asrApiKey'] ?? '') as String? ?? '',
       provider: pick(j['provider'] as String?, 'deepseek'),
@@ -162,6 +177,11 @@ class Settings {
         'embeddingModel': embeddingModel,
         'asrModel': asrModel,
         'asrPreset': asrPreset,
+        'visionEnabled': visionEnabled,
+        'visionProvider': visionProvider,
+        'visionBaseUrl': visionBaseUrl,
+        'visionApiKey': visionApiKey,
+        'visionModel': visionModel,
         'asrBaseUrl': asrBaseUrl,
         'asrApiKey': asrApiKey,
         'provider': provider,
@@ -686,7 +706,17 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
             .where((m) => m.content.trim().isNotEmpty || m.imageBase64 != null)
             .toList();
         final tail = usable.length > 30 ? usable.sublist(usable.length - 30) : usable;
-        return tail.map((m) => m.toJson());
+        final lastImage = tail.lastIndexWhere((m) => m.imageBase64 != null);
+        return [
+          for (var i = 0; i < tail.length; i++)
+            if (i == lastImage || tail[i].imageBase64 == null)
+              tail[i].toJson()
+            else
+              {
+                'role': tail[i].role,
+                'content': '${tail[i].content}（这里原本有一张图，历史里已省略）',
+              },
+        ];
       })(),
     ];
 
@@ -743,16 +773,25 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     List<Map<String, dynamic>> convo,
     Message target,
   ) async {
-    final base = s.baseUrl.endsWith('/') ? s.baseUrl.substring(0, s.baseUrl.length - 1) : s.baseUrl;
+    // Images need a vision-capable model; everything else stays on the chat one.
+    final hasImage = convo.any((m) => m['content'] is List);
+    final useVision = hasImage && s.visionEnabled && s.visionBaseUrl.trim().isNotEmpty;
+    final rawBase = useVision ? s.visionBaseUrl.trim() : s.baseUrl;
+    final apiKey = useVision && s.visionApiKey.trim().isNotEmpty ? s.visionApiKey.trim() : s.apiKey;
+    final model = useVision && s.visionModel.trim().isNotEmpty ? s.visionModel.trim() : s.model;
+
+    if (useVision && mounted) setState(() => _activity = '正在看图（$model）…');
+
+    final base = rawBase.endsWith('/') ? rawBase.substring(0, rawBase.length - 1) : rawBase;
     final client = http.Client();
     _client = client;
     final req = http.Request('POST', Uri.parse('$base/chat/completions'))
       ..headers.addAll({
         'content-type': 'application/json',
-        'authorization': 'Bearer ${s.apiKey}',
+        'authorization': 'Bearer $apiKey',
       })
       ..body = jsonEncode({
-        'model': s.model,
+        'model': model,
         'stream': true,
         'messages': convo,
         'tools': _toolSpecs,
@@ -1700,6 +1739,11 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _asrBase;
   late final TextEditingController _asrKey;
   late String _asrPreset;
+  late bool _visionEnabled;
+  late String _visionProvider;
+  late final TextEditingController _visionBase;
+  late final TextEditingController _visionKey;
+  late final TextEditingController _visionModel;
   late int _proactiveIdleMinutes;
   List<String> _models = const [];
   bool _loadingModels = false;
@@ -1723,6 +1767,11 @@ class _SettingsPageState extends State<SettingsPage> {
     _asrBase = TextEditingController(text: widget.initial.asrBaseUrl);
     _asrKey = TextEditingController(text: widget.initial.asrApiKey);
     _asrPreset = widget.initial.asrPreset;
+    _visionEnabled = widget.initial.visionEnabled;
+    _visionProvider = widget.initial.visionProvider;
+    _visionBase = TextEditingController(text: widget.initial.visionBaseUrl);
+    _visionKey = TextEditingController(text: widget.initial.visionApiKey);
+    _visionModel = TextEditingController(text: widget.initial.visionModel);
     _proactiveIdleMinutes = widget.initial.proactiveIdleMinutes;
     if (widget.initial.apiKey.trim().isNotEmpty) _loadModels();
   }
@@ -1733,6 +1782,9 @@ class _SettingsPageState extends State<SettingsPage> {
     _asr.dispose();
     _asrBase.dispose();
     _asrKey.dispose();
+    _visionBase.dispose();
+    _visionKey.dispose();
+    _visionModel.dispose();
     _key.dispose();
     _model.dispose();
     _persona.dispose();
@@ -1781,6 +1833,11 @@ class _SettingsPageState extends State<SettingsPage> {
       asrPreset: _asrPreset,
       asrBaseUrl: _asrBase.text.trim(),
       asrApiKey: _asrKey.text.trim(),
+      visionEnabled: _visionEnabled,
+      visionProvider: _visionProvider,
+      visionBaseUrl: _visionBase.text.trim(),
+      visionApiKey: _visionKey.text.trim(),
+      visionModel: _visionModel.text.trim(),
     ));
   }
 
@@ -1971,6 +2028,52 @@ class _SettingsPageState extends State<SettingsPage> {
             controller: _asr,
             decoration: const InputDecoration(hintText: '转写模型，例如 FunAudioLLM/SenseVoiceSmall', isDense: true),
           ),
+          const Divider(height: 28),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _visionEnabled,
+            onChanged: (v) => setState(() => _visionEnabled = v),
+            title: const Text('发图时切到看图模型'),
+            subtitle: const Text('聊天模型不支持看图时，带图的这一条自动走另一个模型；其余消息仍用原模型'),
+          ),
+          if (_visionEnabled) ...[
+            DropdownButtonFormField<String>(
+              initialValue: _visionProvider,
+              isExpanded: true,
+              items: kProviders
+                  .where((p) => p.id != 'custom')
+                  .map((p) => DropdownMenuItem(
+                        value: p.id,
+                        child: Text(p.name, style: const TextStyle(fontSize: 13)),
+                      ))
+                  .toList(),
+              onChanged: (id) {
+                if (id == null) return;
+                final p = providerById(id);
+                setState(() {
+                  _visionProvider = id;
+                  if (p.baseUrl.isNotEmpty) _visionBase.text = p.baseUrl;
+                  if (p.models.isNotEmpty) _visionModel.text = p.models.last.contains('vl') || p.models.last.contains('glm') ? p.models.last : p.models.first;
+                });
+              },
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _visionBase,
+              decoration: const InputDecoration(hintText: 'Base URL', isDense: true),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _visionKey,
+              obscureText: true,
+              decoration: const InputDecoration(hintText: '看图服务 API Key（留空则用聊天厂商的 Key）', isDense: true),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _visionModel,
+              decoration: const InputDecoration(hintText: '看图模型，例如 qwen-vl-max / glm-4.5 / kimi-k3', isDense: true),
+            ),
+          ],
           const SizedBox(height: 12),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
