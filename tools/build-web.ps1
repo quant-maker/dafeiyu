@@ -32,8 +32,19 @@ try {
     Log 'adding web platform'
     Flutter @('create', '--platforms', 'web', '--no-pub', '.') | Select-Object -Last 5 | ForEach-Object { Log "  $_" }
   }
-  Log 'pub get'
-  Flutter @('pub', 'get') | Select-Object -Last 4 | ForEach-Object { Log "  $_" }
+  # pub get only when the dependency spec actually changed: it costs ~20s.
+  $pubspec = Join-Path $app 'pubspec.yaml'
+  $hashFile = Join-Path $root '.web-pub-hash'
+  $hash = (Get-FileHash $pubspec -Algorithm SHA256).Hash
+  $prev = if (Test-Path $hashFile) { (Get-Content $hashFile -Raw).Trim() } else { '' }
+  $lock = Join-Path $app 'pubspec.lock'
+  if ($hash -ne $prev -or -not (Test-Path $lock)) {
+    Log 'pub get'
+    Flutter @('pub', 'get') | Select-Object -Last 4 | ForEach-Object { Log "  $_" }
+    Set-Content -Path $hashFile -Value $hash -NoNewline
+  } else {
+    Log 'pub get skipped (deps unchanged)'
+  }
 
   # Sync source and inject the gateway key from the local launcher (never printed).
   # NOTE: Copy-Item nests a directory when the destination already exists, so the
@@ -60,7 +71,7 @@ try {
   }
 
   Log 'build web --release'
-  Flutter @('build', 'web', '--release', '--pwa-strategy=none') | ForEach-Object { Log "  $_" }
+  Flutter @('build', 'web', '--release', '--pwa-strategy=none', '--no-wasm-dry-run') | ForEach-Object { Log "  $_" }
   $out = Join-Path $app 'build\web'
   if (Test-Path (Join-Path $out 'index.html')) {
     $size = [math]::Round(((Get-ChildItem $out -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB, 1)
