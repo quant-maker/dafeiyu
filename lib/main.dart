@@ -341,6 +341,8 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   http.Client? _client;
   int _turnsSinceDigest = 0;
   String _activity = '';
+  DateTime _revealStart = DateTime.now();
+  static const _charsPerSecond = 46.0;
   Timer? _idleTimer;
   int _proactiveCount = 0;
   late final AnimationController _dots;
@@ -661,6 +663,10 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     final today = '${now.year}年${now.month}月${now.day}日 ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
     return [
       if (s.persona.trim().isNotEmpty) s.persona.trim(),
+      '说话方式：像在微信上聊天，不要写文章。'
+          '一次最多 1~2 句，口语、短句；想说三件事就分成三条发，用 ||| 分隔（每条 1~2 句，不要编号）。'
+          '不要每句都总结，不要"首先/其次/总之"，不要客套收尾。'
+          '如果你没把握，就直说"我不确定"，别硬编。',
       '现在是 $today。下面的对话记录可能跨越好几天，注意日期。'
           '如果对方问起以前聊过的事，先看记录和记忆；确实没有就直说没印象，不要编。',
       if (s.memoryEnabled) _memory.asPrompt(),
@@ -696,6 +702,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       _messages.add(Message('assistant', ''));
     });
     _scrollToEnd();
+    _revealStart = DateTime.now();
     await _runAgent();
   }
 
@@ -747,6 +754,8 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           if (mounted) setState(() => _activity = '');
         }
       }
+
+      await _splitIntoSentences(target);
 
       _turnsSinceDigest++;
       if (s.memoryEnabled && _turnsSinceDigest >= 3) {
@@ -831,12 +840,16 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           if (piece != null && piece.isNotEmpty) {
             buffer.write(piece);
             if (mounted) {
+              final elapsed = DateTime.now().difference(_revealStart).inMilliseconds;
+              final allowed = (elapsed / 1000 * _charsPerSecond).round() + 8;
+              final raw = buffer.toString();
+              final visible = raw.length > allowed ? raw.substring(0, allowed) : raw;
               setState(() {
-                target.content = buffer.toString();
+                target.content = visible;
                 _waitingFirstToken = false;
               });
+              _scrollToEnd();
             }
-            _scrollToEnd();
           }
 
           final tcs = delta['tool_calls'] as List?;
@@ -873,6 +886,19 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
     await done.future.timeout(const Duration(minutes: 5));
     await sub.cancel();
+
+    // Drain whatever the throttle held back, so the message finishes typing out.
+    final full = buffer.toString();
+    while (mounted && target.content.length < full.length) {
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      if (!mounted) break;
+      final elapsed = DateTime.now().difference(_revealStart).inMilliseconds;
+      final allowed = (elapsed / 1000 * _charsPerSecond).round() + 8;
+      setState(() {
+        target.content = full.length > allowed ? full.substring(0, allowed) : full;
+      });
+      _scrollToEnd();
+    }
     client.close();
     _client = null;
 
@@ -1120,6 +1146,34 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     } catch (e) {
       debugPrint('[feiyu] tts FAILED: $e');
     }
+  }
+
+  /// A person does not send one wall of text. If she used `|||`, deliver each
+  /// part as its own message with a small pause in between.
+  Future<void> _splitIntoSentences(Message target) async {
+    final parts = target.content
+        .split('|||')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    if (parts.length <= 1) {
+      target.content = parts.isEmpty ? target.content.trim() : parts.first;
+      return;
+    }
+
+    target.content = parts.first;
+    if (mounted) setState(() {});
+    _scrollToEnd();
+
+    for (var i = 1; i < parts.length; i++) {
+      // Thinking + typing time, roughly like a human writing the next line.
+      final wait = Duration(milliseconds: 700 + parts[i].length * 28);
+      await Future<void>.delayed(wait);
+      if (!mounted) return;
+      setState(() => _messages.add(Message('assistant', parts[i])));
+      _scrollToEnd();
+    }
+    if (mounted) unawaited(ChatStore.save(_messages));
   }
 
   // ---------------- memory layers ----------------
