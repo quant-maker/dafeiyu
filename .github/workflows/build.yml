@@ -166,7 +166,8 @@ jobs:
 
       - run: flutter pub get
       - run: flutter build web --release --base-href /
-      - run: rm -rf build/web/assets/packages/sherpa_onnx_web`r`n      - run: cd build/web && zip -r "$GITHUB_WORKSPACE/feiyu-web-${GITHUB_REF_NAME}.zip" .
+      - run: rm -rf build/web/assets/packages/sherpa_onnx_web
+      - run: cd build/web && zip -r "$GITHUB_WORKSPACE/feiyu-web-${GITHUB_REF_NAME}.zip" .
 
       - uses: actions/upload-artifact@v4
         with:
