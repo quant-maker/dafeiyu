@@ -48,7 +48,7 @@ Log 'created'
 Copy-Item (Join-Path $ws 'feiyu_app_src\main.dart') (Join-Path $app 'lib\main.dart') -Force
 Copy-Item (Join-Path $ws 'feiyu_app_src\providers.dart') (Join-Path $app 'lib\providers.dart') -Force
 # Copy-Item nests a folder when the destination exists, so wipe it first.
-foreach ($sub in @('scene', 'memory', 'feeds')) {
+foreach ($sub in @('scene', 'memory', 'feeds', 'voice')) {
   $src = Join-Path $ws "feiyu_app_src\$sub"
   if (-not (Test-Path $src)) { continue }
   $dst = Join-Path $app "lib\$sub"

@@ -45,7 +45,7 @@ jobs:
           echo "sdk=$SDK"
           yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
           "$SDK/cmdline-tools/latest/bin/sdkmanager" --install \
-            "platform-tools" "platforms;android-36" "build-tools;35.0.0" "build-tools;36.0.0" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null 2>&1 || true
+            "platform-tools" "platforms;android-34" "platforms;android-36" "build-tools;35.0.0" "build-tools;36.0.0" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null 2>&1 || true
           ls "$SDK/ndk" 2>/dev/null || echo "no ndk preinstalled"
 
       - name: Build APK
@@ -166,7 +166,7 @@ jobs:
 
       - run: flutter pub get
       - run: flutter build web --release --base-href /
-      - run: cd build/web && zip -r "$GITHUB_WORKSPACE/feiyu-web-${GITHUB_REF_NAME}.zip" .
+      - run: rm -rf build/web/assets/packages/sherpa_onnx_web`r`n      - run: cd build/web && zip -r "$GITHUB_WORKSPACE/feiyu-web-${GITHUB_REF_NAME}.zip" .
 
       - uses: actions/upload-artifact@v4
         with:

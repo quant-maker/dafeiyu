@@ -18,6 +18,7 @@ import 'providers.dart';
 import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'scene/scene_stage.dart';
+import 'voice/local_asr_web.dart' if (dart.library.io) 'voice/local_asr_io.dart';
 
 // Injected by tools/build-web.ps1 / build-apk.ps1 from the local launcher.
 const kInjectedKey = '__FEIYU_KEY__';
@@ -51,6 +52,7 @@ class AsrPreset {
 }
 
 const kAsrPresets = <AsrPreset>[
+  AsrPreset(id: 'local', name: '本机离线（SenseVoice）', baseUrl: '', models: ['sense-voice']),
   AsrPreset(id: 'same', name: '跟随聊天厂商', baseUrl: '', models: []),
   AsrPreset(
     id: 'siliconflow',
@@ -240,6 +242,11 @@ class Memory {
     if (facts.isEmpty) return '';
     return '你记得关于主人的这些事（长期记忆，自然使用，不要逐条复述）：\n' + facts.map((f) => '- $f').join('\n');
   }
+}
+
+class _ModelMissing implements Exception {
+  @override
+  String toString() => '离线语音模型还没下载';
 }
 
 class _AsrUnavailable implements Exception {
@@ -473,8 +480,17 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         return;
       }
       final dir = await getTemporaryDirectory();
-      final path = '${dir.path}/feiyu_${DateTime.now().millisecondsSinceEpoch}.m4a';
-      await _recorder.start(const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 64000), path: path);
+      final local = s.asrPreset == 'local';
+      final ext = local ? 'wav' : 'm4a';
+      final path = '${dir.path}/feiyu_${DateTime.now().millisecondsSinceEpoch}.$ext';
+      final config = local
+          ? const RecordConfig(
+              encoder: AudioEncoder.wav,
+              sampleRate: 16000,
+              numChannels: 1,
+            )
+          : const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 64000);
+      await _recorder.start(config, path: path);
       setState(() {
         _recording = true;
         _listening = true;
@@ -488,6 +504,63 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         _listening = false;
         _error = '录音启动失败：$e';
       });
+    }
+  }
+
+  /// Download the on-device model, showing a simple progress dialog.
+  Future<void> _promptModelDownload() async {
+    if (!mounted) return;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('还要下载离线语音模型'),
+        content: const Text(
+          'SenseVoice 中文识别模型约 228 MB，只需下载一次，之后完全离线、不花钱。\n\n'
+          '下载完就能直接说话，即使断网也认识。',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('稍后')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('下载')),
+        ],
+      ),
+    );
+    if (go != true || !mounted) return;
+
+    final progress = ValueNotifier<double>(0);
+    if (mounted) {
+      setState(() => _voiceHint = '正在下载模型…');
+    }
+    unawaited(showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => ValueListenableBuilder<double>(
+        valueListenable: progress,
+        builder: (_, value, __) => AlertDialog(
+          title: const Text('下载离线语音模型'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              LinearProgressIndicator(value: value == 0 ? null : value),
+              const SizedBox(height: 10),
+              Text('${(value * 100).round()}%'),
+            ],
+          ),
+        ),
+      ),
+    ));
+
+    try {
+      final engine = await LocalAsrImpl.create();
+      await engine.download(onProgress: (p) => progress.value = p);
+      if (mounted && Navigator.canPop(context)) Navigator.pop(context);
+      if (mounted) {
+        setState(() => _voiceHint = '模型就绪，可以说话了');
+        await Future<void>.delayed(const Duration(seconds: 2));
+        if (mounted) setState(() => _voiceHint = '');
+      }
+    } catch (e) {
+      if (mounted && Navigator.canPop(context)) Navigator.pop(context);
+      if (mounted) setState(() => _error = '模型下载失败：$e');
     }
   }
 
@@ -570,6 +643,15 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           _error = '没听清，要不要再说一次？';
         });
       }
+    } on _ModelMissing {
+      if (mounted) {
+        setState(() {
+          _listening = false;
+          _voiceHint = '';
+          _error = null;
+        });
+        await _promptModelDownload();
+      }
     } on _AsrUnavailable {
       if (mounted) {
         setState(() {
@@ -590,6 +672,19 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
   /// Uploads the clip to the gateway's transcription endpoint.
   Future<String?> _transcribe(Settings s, String path) async {
+    if (s.asrPreset == 'local') {
+      final engine = await LocalAsrImpl.create();
+      if (!await engine.ready) {
+        throw _ModelMissing();
+      }
+      if (mounted) setState(() => _voiceHint = '识别中…');
+      final text = await engine.transcribe(path);
+      if (!mounted) return text;
+      setState(() => _voiceHint = '');
+      if (text == null || text.trim().isEmpty) throw Exception('没听清，再说一次？');
+      return text;
+    }
+
     final asrBase = s.asrBaseUrl.trim().isEmpty ? s.baseUrl : s.asrBaseUrl.trim();
     final asrKey = s.asrApiKey.trim().isEmpty ? s.apiKey : s.asrApiKey.trim();
     final base = asrBase.endsWith('/') ? asrBase.substring(0, asrBase.length - 1) : asrBase;

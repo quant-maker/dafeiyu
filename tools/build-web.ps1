@@ -50,7 +50,7 @@ try {
   # NOTE: Copy-Item nests a directory when the destination already exists, so the
   # destination is removed first — otherwise a stale copy keeps getting compiled.
   Copy-Item (Join-Path $ws 'feiyu_app_src\main.dart') (Join-Path $app 'lib\main.dart') -Force
-  foreach ($sub in @('scene', 'memory', 'feeds')) {
+  foreach ($sub in @('scene', 'memory', 'feeds', 'voice')) {
     $src = Join-Path $ws "feiyu_app_src\$sub"
     if (-not (Test-Path $src)) { continue }
     $dst = Join-Path $app "lib\$sub"
@@ -73,6 +73,9 @@ try {
   Log 'build web --release'
   Flutter @('build', 'web', '--release', '--pwa-strategy=none', '--no-wasm-dry-run') | ForEach-Object { Log "  $_" }
   $out = Join-Path $app 'build\web'
+  # sherpa-onnx ships a 14 MB wasm we never use on web (local ASR is native only).
+  $dead = Join-Path $out 'assets\packages\sherpa_onnx_web'
+  if (Test-Path $dead) { Remove-Item $dead -Recurse -Force; Log 'pruned sherpa web assets' }
   if (Test-Path (Join-Path $out 'index.html')) {
     $size = [math]::Round(((Get-ChildItem $out -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB, 1)
     Log "WEB OK: $out ($size MB)"
