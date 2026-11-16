@@ -165,6 +165,15 @@ class Settings {
     );
   }
 
+  /// Returns a copy pointed at a different speech service (used when the chat
+  /// provider turns out to have no transcription endpoint).
+  Settings copyWithAsr({required String preset, required String baseUrl, required String model}) {
+    asrPreset = preset;
+    asrBaseUrl = baseUrl;
+    asrModel = model;
+    return this;
+  }
+
   Future<void> save() async {
     final sp = await SharedPreferences.getInstance();
     await sp.setString(
@@ -231,6 +240,13 @@ class Memory {
     if (facts.isEmpty) return '';
     return '你记得关于主人的这些事（长期记忆，自然使用，不要逐条复述）：\n' + facts.map((f) => '- $f').join('\n');
   }
+}
+
+class _AsrUnavailable implements Exception {
+  final String preset;
+  _AsrUnavailable(this.preset);
+  @override
+  String toString() => '语音服务没有转写接口';
 }
 
 class Message {
@@ -475,6 +491,50 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     }
   }
 
+  /// 404 from the transcription endpoint: the preset simply has no such API.
+  Future<void> _handleAsrUnavailable() async {
+    final s = _settings;
+    if (s == null || !mounted) return;
+    final switchable = s.asrPreset == 'same';
+
+    if (switchable) {
+      // Point her at a service that definitely has /audio/transcriptions.
+      final preset = asrById('siliconflow');
+      await s.copyWithAsr(
+        preset: preset.id,
+        baseUrl: preset.baseUrl,
+        model: preset.models.first,
+      ).save();
+      if (mounted) setState(() => _settings = s);
+    }
+
+    if (!mounted) return;
+    final needsKey = switchable || s.asrApiKey.trim().isEmpty;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('语音识别还没配好'),
+        content: Text(
+          switchable
+              ? '当前厂商没有语音转写接口（404）。\n\n'
+                  '已经帮你切到「硅基流动 · SenseVoice」，去设置里填一个它的 API Key 就能用。'
+              : '转写接口返回 404，检查设置 → 语音识别里的 Base URL 和模型名。',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('知道了')),
+          if (needsKey)
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _openSettings();
+              },
+              child: const Text('去填 Key'),
+            ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _finishRecording() async {
     final s = _settings;
     setState(() {
@@ -510,6 +570,15 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           _error = '没听清，要不要再说一次？';
         });
       }
+    } on _AsrUnavailable {
+      if (mounted) {
+        setState(() {
+          _listening = false;
+          _voiceHint = '';
+          _error = null;
+        });
+        await _handleAsrUnavailable();
+      }
     } catch (e) {
       setState(() {
         _listening = false;
@@ -532,8 +601,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     final streamed = await req.send().timeout(const Duration(seconds: 60));
     final body = await streamed.stream.bytesToString();
     if (streamed.statusCode == 404) {
-      throw Exception('这个地址没有语音转写接口（404）。\n'
-          '去设置 → 语音识别，单独选一个支持转写的服务（比如硅基流动的 SenseVoice）。');
+      throw _AsrUnavailable(s.asrPreset);
     }
     if (streamed.statusCode == 401 || streamed.statusCode == 403) {
       throw Exception('语音服务的 Key 无效（HTTP ${streamed.statusCode}），检查设置里的语音识别 Key');
