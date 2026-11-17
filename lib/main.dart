@@ -53,7 +53,7 @@ class AsrPreset {
 }
 
 const kAsrPresets = <AsrPreset>[
-  AsrPreset(id: 'local', name: '本机离线（SenseVoice）', baseUrl: '', models: ['sense-voice']),
+  AsrPreset(id: 'local', name: '本机离线（Dolphin / SenseVoice）', baseUrl: '', models: ['local']),
   AsrPreset(id: 'same', name: '跟随聊天厂商', baseUrl: '', models: []),
   AsrPreset(
     id: 'siliconflow',
@@ -86,6 +86,7 @@ class Settings {
   String embeddingModel;
   String asrModel;
   String asrPreset;
+  String asrLocalModel;
   bool visionEnabled;
   String visionProvider;
   String visionBaseUrl;
@@ -114,6 +115,7 @@ class Settings {
     this.embeddingModel = 'Qwen/Qwen3-Embedding-4B',
     this.asrModel = 'gpt-4o-mini-transcribe',
     this.asrPreset = 'same',
+    this.asrLocalModel = 'dolphin',
     this.visionEnabled = false,
     this.visionProvider = 'moonshot',
     this.visionBaseUrl = 'https://api.moonshot.cn/v1',
@@ -160,6 +162,7 @@ class Settings {
       embeddingModel: pick(j['embeddingModel'] as String?, 'Qwen/Qwen3-Embedding-4B'),
       asrModel: pick(j['asrModel'] as String?, 'gpt-4o-mini-transcribe'),
       asrPreset: pick(j['asrPreset'] as String?, 'same'),
+      asrLocalModel: pick(j['asrLocalModel'] as String?, 'dolphin'),
       visionEnabled: j['visionEnabled'] as bool? ?? false,
       visionProvider: pick(j['visionProvider'] as String?, 'moonshot'),
       visionBaseUrl: (j['visionBaseUrl'] ?? '') as String? ?? '',
@@ -203,6 +206,7 @@ class Settings {
         'embeddingModel': embeddingModel,
         'asrModel': asrModel,
         'asrPreset': asrPreset,
+        'asrLocalModel': asrLocalModel,
         'visionEnabled': visionEnabled,
         'visionProvider': visionProvider,
         'visionBaseUrl': visionBaseUrl,
@@ -563,7 +567,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     ));
 
     try {
-      final engine = await LocalAsrImpl.create();
+      final engine = await LocalAsrImpl.create(kind: _settings?.asrLocalModel ?? 'dolphin');
       await engine.download(onProgress: (p) => progress.value = p);
       if (mounted && Navigator.canPop(context)) Navigator.pop(context);
       if (mounted) {
@@ -686,7 +690,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   /// Uploads the clip to the gateway's transcription endpoint.
   Future<String?> _transcribe(Settings s, String path) async {
     if (s.asrPreset == 'local') {
-      final engine = await LocalAsrImpl.create();
+      final engine = await LocalAsrImpl.create(kind: s.asrLocalModel);
       if (!await engine.ready) {
         throw _ModelMissing();
       }
@@ -1999,6 +2003,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _asrBase;
   late final TextEditingController _asrKey;
   late String _asrPreset;
+  late String _asrLocalModel;
   late bool _visionEnabled;
   late String _visionProvider;
   late final TextEditingController _visionBase;
@@ -2034,6 +2039,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _asrBase = TextEditingController(text: widget.initial.asrBaseUrl);
     _asrKey = TextEditingController(text: widget.initial.asrApiKey);
     _asrPreset = widget.initial.asrPreset;
+    _asrLocalModel = widget.initial.asrLocalModel;
     _visionEnabled = widget.initial.visionEnabled;
     _visionProvider = widget.initial.visionProvider;
     _visionBase = TextEditingController(text: widget.initial.visionBaseUrl);
@@ -2144,6 +2150,7 @@ class _SettingsPageState extends State<SettingsPage> {
       apiKeys: {..._keys, _provider: _key.text.trim()},
       asrModel: _asr.text.trim(),
       asrPreset: _asrPreset,
+      asrLocalModel: _asrLocalModel,
       asrBaseUrl: _asrBase.text.trim(),
       asrApiKey: _asrKey.text.trim(),
       visionEnabled: _visionEnabled,
@@ -2377,7 +2384,22 @@ class _SettingsPageState extends State<SettingsPage> {
               });
             },
           ),
-          if (_asrPreset != 'same') ...[
+          if (_asrPreset == 'local') ...[
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              initialValue: _asrLocalModel,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: '离线模型', isDense: true),
+              items: LocalAsrImpl.models.entries
+                  .map((e) => DropdownMenuItem(
+                        value: e.key,
+                        child: Text(e.value, style: const TextStyle(fontSize: 13)),
+                      ))
+                  .toList(),
+              onChanged: (v) => setState(() => _asrLocalModel = v ?? 'dolphin'),
+            ),
+          ],
+          if (_asrPreset != 'same' && _asrPreset != 'local') ...[
             const SizedBox(height: 8),
             TextField(
               controller: _asrBase,
