@@ -41,6 +41,8 @@ dependencies:
   video_player: ^2.10.1
   record: ^6.2.1
   sherpa_onnx: ^2.0.1
+  audioplayers: ^6.1.0
+  archive: ^3.6.1
   flutter_tts: ^4.2.0
   path_provider: ^2.1.4
 

@@ -19,6 +19,7 @@ import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'scene/scene_stage.dart';
 import 'voice/local_asr_web.dart' if (dart.library.io) 'voice/local_asr_io.dart';
+import 'voice/local_tts_web.dart' if (dart.library.io) 'voice/local_tts_io.dart';
 
 // Injected by tools/build-web.ps1 / build-apk.ps1 from the local launcher.
 const kInjectedKey = '__FEIYU_KEY__';
@@ -95,6 +96,9 @@ class Settings {
   String provider;
   Map<String, String> apiKeys;
   bool ttsEnabled;
+  String ttsEngine;
+  int ttsSid;
+  double ttsSpeed;
   int proactiveIdleMinutes;
 
   Settings({
@@ -120,6 +124,9 @@ class Settings {
     this.provider = 'deepseek',
     this.apiKeys = const {},
     this.ttsEnabled = false,
+    this.ttsEngine = 'system',
+    this.ttsSid = 47,
+    this.ttsSpeed = 1.0,
     this.proactiveIdleMinutes = 8,
   });
 
@@ -163,6 +170,9 @@ class Settings {
       provider: pick(j['provider'] as String?, 'deepseek'),
       apiKeys: ((j['apiKeys'] as Map?) ?? const {}).map((k, v) => MapEntry(k.toString(), v.toString())),
       ttsEnabled: j['ttsEnabled'] as bool? ?? false,
+      ttsEngine: pick(j['ttsEngine'] as String?, 'system'),
+      ttsSid: (j['ttsSid'] as num?)?.toInt() ?? 47,
+      ttsSpeed: (j['ttsSpeed'] as num?)?.toDouble() ?? 1.0,
       proactiveIdleMinutes: (j['proactiveIdleMinutes'] as num?)?.toInt() ?? 8,
     );
   }
@@ -203,6 +213,9 @@ class Settings {
         'provider': provider,
         'apiKeys': apiKeys,
         'ttsEnabled': ttsEnabled,
+        'ttsEngine': ttsEngine,
+        'ttsSid': ttsSid,
+        'ttsSpeed': ttsSpeed,
         'proactiveIdleMinutes': proactiveIdleMinutes,
       }),
     );
@@ -1298,16 +1311,33 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   Future<void> _speak(String text) async {
     final s = _settings;
     if (s == null || !s.ttsEnabled || text.trim().isEmpty) return;
+    // Long essays get tiring to hear.
+    final spoken = text.length > 220 ? '${text.substring(0, 220)}…' : text;
+
+    if (s.ttsEngine == 'local') {
+      try {
+        final engine = await LocalTtsImpl.create();
+        if (!await engine.ready) {
+          debugPrint('[feiyu] local tts model missing');
+          return;
+        }
+        final ok = await engine.speak(spoken, sid: s.ttsSid, speed: s.ttsSpeed);
+        if (!ok) debugPrint('[feiyu] local tts produced nothing');
+        return;
+      } catch (e) {
+        debugPrint('[feiyu] local tts FAILED: $e');
+        return;
+      }
+    }
+
     try {
       await _tts.stop();
       await _tts.setLanguage('zh-CN');
       await _tts.setSpeechRate(0.52);
       await _tts.setPitch(1.05);
-      // Speak the first couple of sentences; long essays get tiring to hear.
-      final spoken = text.length > 220 ? '${text.substring(0, 220)}…' : text;
       await _tts.speak(spoken);
     } catch (e) {
-      debugPrint('[feiyu] tts FAILED: $e');
+      debugPrint('[feiyu] system tts FAILED: $e');
     }
   }
 
@@ -1957,6 +1987,12 @@ class _SettingsPageState extends State<SettingsPage> {
   late double _sceneDim;
   late String _sceneImage;
   late bool _ttsEnabled;
+  late String _ttsEngine;
+  late int _ttsSid;
+  late double _ttsSpeed;
+  bool _ttsModelReady = false;
+  bool _downloadingTts = false;
+  double _ttsProgress = 0;
   late String _provider;
   late Map<String, String> _keys;
   late final TextEditingController _asr;
@@ -1986,6 +2022,12 @@ class _SettingsPageState extends State<SettingsPage> {
     _sceneDim = widget.initial.sceneDim;
     _sceneImage = widget.initial.sceneImage;
     _ttsEnabled = widget.initial.ttsEnabled;
+    _ttsEngine = widget.initial.ttsEngine;
+    _ttsSid = widget.initial.ttsSid;
+    _ttsSpeed = widget.initial.ttsSpeed;
+    LocalTtsImpl.create().then((e) => e.ready).then((ok) {
+      if (mounted) setState(() => _ttsModelReady = ok);
+    }).catchError((Object _) => false);
     _provider = widget.initial.provider;
     _keys = Map.of(widget.initial.apiKeys);
     _asr = TextEditingController(text: widget.initial.asrModel);
@@ -2037,6 +2079,27 @@ class _SettingsPageState extends State<SettingsPage> {
     return name.replaceFirst('room-', '房间·');
   }
 
+  Future<void> _downloadTts() async {
+    setState(() {
+      _downloadingTts = true;
+      _ttsProgress = 0;
+    });
+    try {
+      final engine = await LocalTtsImpl.create();
+      await engine.download(onProgress: (p) {
+        if (mounted) setState(() => _ttsProgress = p);
+      });
+      final ok = await engine.ready;
+      if (mounted) setState(() => _ttsModelReady = ok);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载失败：$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _downloadingTts = false);
+    }
+  }
+
   Future<void> _loadModels() async {
     setState(() {
       _loadingModels = true;
@@ -2074,6 +2137,9 @@ class _SettingsPageState extends State<SettingsPage> {
       sceneDim: _sceneDim,
       sceneImage: _sceneImage,
       ttsEnabled: _ttsEnabled,
+      ttsEngine: _ttsEngine,
+      ttsSid: _ttsSid,
+      ttsSpeed: _ttsSpeed,
       provider: _provider,
       apiKeys: {..._keys, _provider: _key.text.trim()},
       asrModel: _asr.text.trim(),
@@ -2235,8 +2301,62 @@ class _SettingsPageState extends State<SettingsPage> {
             value: _ttsEnabled,
             onChanged: (v) => setState(() => _ttsEnabled = v),
             title: const Text('语音朗读'),
-            subtitle: const Text('回答完用系统语音念出来（前三句左右）'),
+            subtitle: const Text('回答完念出来（前三句左右）'),
           ),
+          if (_ttsEnabled) ...[
+            DropdownButtonFormField<String>(
+              initialValue: _ttsEngine,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: '发音引擎', isDense: true),
+              items: const [
+                DropdownMenuItem(value: 'system', child: Text('系统语音（免费、机械）', style: TextStyle(fontSize: 13))),
+                DropdownMenuItem(value: 'local', child: Text('本机 Kokoro（自然、离线）', style: TextStyle(fontSize: 13))),
+              ],
+              onChanged: (v) => setState(() => _ttsEngine = v ?? 'system'),
+            ),
+            if (_ttsEngine == 'local') ...[
+              const SizedBox(height: 8),
+              DropdownButtonFormField<int>(
+                initialValue: _ttsSid,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: '音色', isDense: true),
+                items: LocalTtsImpl.voices.entries
+                    .map((e) => DropdownMenuItem(
+                          value: e.key,
+                          child: Text(e.value, style: const TextStyle(fontSize: 13)),
+                        ))
+                    .toList(),
+                onChanged: (v) => setState(() => _ttsSid = v ?? 47),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: Row(
+                  children: [
+                    const Text('语速：', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    Expanded(
+                      child: Slider(
+                        value: _ttsSpeed,
+                        min: 0.6,
+                        max: 1.5,
+                        divisions: 18,
+                        label: _ttsSpeed.toStringAsFixed(2),
+                        onChanged: (v) => setState(() => _ttsSpeed = v),
+                      ),
+                    ),
+                    Text(_ttsSpeed.toStringAsFixed(2), style: const TextStyle(fontSize: 12)),
+                  ],
+                ),
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: _downloadingTts ? null : _downloadTts,
+                  icon: const Icon(Icons.download_outlined, size: 18),
+                  label: Text(_ttsModelReady ? '模型已就绪（点击重新下载）' : '下载语音模型（约 147 MB）'),
+                ),
+              ),
+            ],
+          ],
           const _Label('语音识别服务（录音后上传这里转文字，不用手机自带识别）'),
           DropdownButtonFormField<String>(
             initialValue: _asrPreset,
