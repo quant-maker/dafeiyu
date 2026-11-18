@@ -1519,6 +1519,14 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
   // ---------------- footprints ----------------
 
+  Future<void> _openComfy() async {
+    final s = _settings;
+    if (s == null) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ComfyPage(baseUrl: s.comfyUrl, workflowJson: s.comfyWorkflow),
+    ));
+  }
+
   Future<void> _openFootprints() async {
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => FootprintsPage(
@@ -1648,6 +1656,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           ),
           actions: [
             IconButton(onPressed: _openFootprints, icon: const Icon(Icons.photo_library_outlined), tooltip: '她的足迹'),
+            IconButton(onPressed: _openComfy, icon: const Icon(Icons.brush_outlined), tooltip: '画画（ComfyUI）'),
             IconButton(onPressed: _clear, icon: const Icon(Icons.auto_awesome_outlined), tooltip: '新会话'),
             IconButton(onPressed: _openSettings, icon: const Icon(Icons.tune), tooltip: '设置'),
             const SizedBox(width: 4),
@@ -1801,6 +1810,16 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
                 ],
               ),
             ),
+          if (m.imageBase64 != null) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: GestureDetector(
+                onTap: () => _openImage(m.imageBase64!),
+                child: Image.memory(base64Decode(m.imageBase64!), width: 260, fit: BoxFit.contain),
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
           typing ? _TypingDots(controller: _dots) : text,
         ],
       ),
@@ -1896,6 +1915,17 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  void _openImage(String b64) {
+    showDialog<void>(
+      context: context,
+      builder: (_) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(8),
+        child: InteractiveViewer(child: Image.memory(base64Decode(b64))),
       ),
     );
   }
@@ -2075,6 +2105,8 @@ class _SettingsPageState extends State<SettingsPage> {
   late String _asrPreset;
   late String _asrLocalModel;
   late bool _visionEnabled;
+  late final TextEditingController _comfyUrl;
+  late final TextEditingController _comfyWorkflow;
   late String _visionProvider;
   late final TextEditingController _visionBase;
   late final TextEditingController _visionKey;
@@ -2111,6 +2143,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _asrPreset = widget.initial.asrPreset;
     _asrLocalModel = widget.initial.asrLocalModel;
     _visionEnabled = widget.initial.visionEnabled;
+    _comfyUrl = TextEditingController(text: widget.initial.comfyUrl);
+    _comfyWorkflow = TextEditingController(text: widget.initial.comfyWorkflow);
     _visionProvider = widget.initial.visionProvider;
     _visionBase = TextEditingController(text: widget.initial.visionBaseUrl);
     _visionKey = TextEditingController(text: widget.initial.visionApiKey);
@@ -2128,6 +2162,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _visionBase.dispose();
     _visionKey.dispose();
     _visionModel.dispose();
+    _comfyUrl.dispose();
+    _comfyWorkflow.dispose();
     _key.dispose();
     _model.dispose();
     _persona.dispose();
@@ -2228,6 +2264,8 @@ class _SettingsPageState extends State<SettingsPage> {
       visionBaseUrl: _visionBase.text.trim(),
       visionApiKey: _visionKey.text.trim(),
       visionModel: _visionModel.text.trim(),
+      comfyUrl: _comfyUrl.text.trim().isEmpty ? 'http://192.168.1.10:8188' : _comfyUrl.text.trim(),
+      comfyWorkflow: _comfyWorkflow.text,
     ));
   }
 
@@ -2534,6 +2572,27 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ],
           const SizedBox(height: 12),
+          const Divider(height: 28),
+          const _Label('ComfyUI（电脑上的画图服务）'),
+          TextField(
+            controller: _comfyUrl,
+            decoration: const InputDecoration(
+              hintText: 'http://192.168.1.10:8188',
+              isDense: true,
+              helperText: '手机和电脑要在同一个局域网；ComfyUI 需以 --listen 0.0.0.0 启动',
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _comfyWorkflow,
+            minLines: 3,
+            maxLines: 8,
+            decoration: const InputDecoration(
+              hintText: '在 ComfyUI 里用「Save (API Format)」导出工作流，把 JSON 粘到这里',
+              isDense: true,
+              helperText: '提示词会自动写进采样器的正向/负向输入',
+            ),
+          ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             value: _sceneEnabled,
