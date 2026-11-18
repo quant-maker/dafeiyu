@@ -45,6 +45,16 @@ String defaultBaseUrl() {
   return kGatewayBase;
 }
 
+const kComfySdTurboWorkflow = r"""{
+  "3": {"class_type": "KSampler", "inputs": {"seed": 1, "steps": 2, "cfg": 1.0, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
+  "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "sd_turbo.safetensors"}},
+  "5": {"class_type": "EmptyLatentImage", "inputs": {"width": 512, "height": 512, "batch_size": 1}},
+  "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}},
+  "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}},
+  "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+  "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "feiyu"}}
+}""";
+
 class AsrPreset {
   final String id;
   final String name;
@@ -2669,6 +2679,19 @@ class _SettingsPageState extends State<SettingsPage> {
               hintText: '「Save (API Format)」导出的 JSON',
               isDense: true,
               helperText: '提示词会自动写进采样器的正向/负向输入',
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => setState(() {
+                _comfyWorkflow.text = kComfySdTurboWorkflow;
+                if (_comfyUrl.text.trim().isEmpty || _comfyUrl.text.contains('192.168.1.10')) {
+                  // convenient for local testing
+                }
+              }),
+              icon: const Icon(Icons.auto_fix_high, size: 16),
+              label: const Text('填入示例（SD-Turbo）', style: TextStyle(fontSize: 12)),
             ),
           ),
           const SizedBox(height: 12),
