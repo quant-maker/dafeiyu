@@ -13,6 +13,8 @@ import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
+import 'comfy/comfy.dart';
+import 'comfy/comfy_page.dart';
 import 'feeds/footprints.dart';
 import 'providers.dart';
 import 'feeds/footprints_page.dart';
@@ -83,6 +85,8 @@ class Settings {
   bool sceneEnabled;
   double sceneDim;
   String sceneImage;
+  String comfyUrl;
+  String comfyWorkflow;
   String embeddingModel;
   String asrModel;
   String asrPreset;
@@ -112,6 +116,8 @@ class Settings {
     this.sceneEnabled = true,
     this.sceneDim = .25,
     this.sceneImage = '',
+    this.comfyUrl = 'http://192.168.1.10:8188',
+    this.comfyWorkflow = '',
     this.embeddingModel = 'Qwen/Qwen3-Embedding-4B',
     this.asrModel = 'gpt-4o-mini-transcribe',
     this.asrPreset = 'same',
@@ -159,6 +165,8 @@ class Settings {
       sceneEnabled: j['sceneEnabled'] as bool? ?? true,
       sceneDim: (j['sceneDim'] as num?)?.toDouble() ?? .25,
       sceneImage: (j['sceneImage'] ?? '') as String? ?? '',
+      comfyUrl: pick(j['comfyUrl'] as String?, 'http://192.168.1.10:8188'),
+      comfyWorkflow: (j['comfyWorkflow'] ?? '') as String? ?? '',
       embeddingModel: pick(j['embeddingModel'] as String?, 'Qwen/Qwen3-Embedding-4B'),
       asrModel: pick(j['asrModel'] as String?, 'gpt-4o-mini-transcribe'),
       asrPreset: pick(j['asrPreset'] as String?, 'same'),
@@ -203,6 +211,8 @@ class Settings {
         'sceneEnabled': sceneEnabled,
         'sceneDim': sceneDim,
         'sceneImage': sceneImage,
+        'comfyUrl': comfyUrl,
+        'comfyWorkflow': comfyWorkflow,
         'embeddingModel': embeddingModel,
         'asrModel': asrModel,
         'asrPreset': asrPreset,
@@ -276,7 +286,7 @@ class _AsrUnavailable implements Exception {
 class Message {
   final String role;
   String content;
-  final String? imageBase64;
+  String? imageBase64;
   final DateTime at;
   Message(this.role, this.content, {this.imageBase64, DateTime? at}) : at = at ?? DateTime.now();
 
@@ -821,6 +831,22 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     {
       'type': 'function',
       'function': {
+        'name': 'draw',
+        'description': '在主人电脑上的 ComfyUI 里画一张图并发到对话里。'
+            '主人要图片、想让你画点什么、或者需要配图时用它。提示词用英文效果通常更好。',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'prompt': {'type': 'string', 'description': '画面描述（建议英文）'},
+            'negative': {'type': 'string', 'description': '不想要的东西（可选）'},
+          },
+          'required': ['prompt'],
+        },
+      },
+    },
+    {
+      'type': 'function',
+      'function': {
         'name': 'footprint',
         'description': '把这一刻收进「足迹」——只有当你真的觉得这段对话里有值得记住的瞬间时才用：'
             '一次心意、一个新发现、一句戳中的话、一个共同的小胜利。'
@@ -851,11 +877,12 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           '如果对方问起以前聊过的事，先看记录和记忆；确实没有就直说没印象，不要编。',
       if (s.memoryEnabled) _memory.asPrompt(),
       _recentDigest(),
-      '你可以调用三个工具：'
+      '你可以调用这些工具：'
           '① fetch_url 抓网页正文（查资料、看链接时用，别凭空猜网页内容）；'
           '② remember 把值得长期记住的事记下来（对方的偏好、约定、正在做的项目、重要经历），'
           '一条一句话，不要记流水账；'
-          '③ footprint 把当下这一刻收进足迹——只有真的打动你、值得多年后回看的瞬间才用，'
+          '③ draw 在主人电脑上的 ComfyUI 里画图，画好会自动出现在对话里；'
+          '④ footprint 把当下这一刻收进足迹——只有真的打动你、值得多年后回看的瞬间才用，'
           '普通对话不用记。宁可漏记，也不要为了记录而记录。'
           '抓到内容后用自己的话答，别整段照抄。',
     ].where((x) => x.isNotEmpty).join('\n\n');
@@ -1103,6 +1130,49 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       await FootprintStore.save(next);
       debugPrint('[feiyu] footprint kept: $title');
       return '已收进足迹：$title';
+    }
+    if (name == 'draw') {
+      final s = _settings;
+      if (s == null) return '还没设置';
+      if (s.comfyWorkflow.trim().isEmpty) {
+        return '电脑上的 ComfyUI 还没配置：去设置 → ComfyUI，粘贴一段「Save (API Format)」导出的工作流 JSON';
+      }
+      final prompt = (args['prompt'] ?? '').toString().trim();
+      if (prompt.isEmpty) return '要画什么？给我一句画面描述';
+
+      final client = ComfyClient(s.comfyUrl);
+      if (!await client.ping()) return '连不上 ${s.comfyUrl}，检查电脑上的 ComfyUI 是否开着、是否同一局域网';
+
+      if (mounted) setState(() => _activity = '正在作画…');
+      try {
+        final wf = jsonDecode(s.comfyWorkflow) as Map<String, dynamic>;
+        final patched = patchWorkflow(
+          wf,
+          prompt: prompt,
+          negative: (args['negative'] ?? '').toString(),
+          seed: DateTime.now().millisecondsSinceEpoch % 1000000007,
+        );
+        final id = await client.submit(patched);
+        final images = await client.waitForImages(
+          id,
+          onTick: (elapsed) {
+            if (mounted) setState(() => _activity = '正在作画… ${elapsed.inSeconds}s');
+          },
+        );
+        if (images.isEmpty) return '这次没画出东西，检查一下工作流';
+        if (mounted) {
+          setState(() {
+            _activity = '';
+            _messages.last.imageBase64 = base64Encode(images.first);
+          });
+          _scrollToEnd();
+          unawaited(ChatStore.save(_messages));
+        }
+        return '画好了（${images.length} 张）';
+      } catch (e) {
+        if (mounted) setState(() => _activity = '');
+        return '作画失败：$e';
+      }
     }
     if (name == 'recall') {
       final q = (args['query'] ?? '').toString().trim();

@@ -50,7 +50,7 @@ try {
   # NOTE: Copy-Item nests a directory when the destination already exists, so the
   # destination is removed first — otherwise a stale copy keeps getting compiled.
   Copy-Item (Join-Path $ws 'feiyu_app_src\main.dart') (Join-Path $app 'lib\main.dart') -Force
-  foreach ($sub in @('scene', 'memory', 'feeds', 'voice')) {
+  foreach ($sub in @('scene', 'memory', 'feeds', 'voice', 'comfy')) {
     $src = Join-Path $ws "feiyu_app_src\$sub"
     if (-not (Test-Path $src)) { continue }
     $dst = Join-Path $app "lib\$sub"
