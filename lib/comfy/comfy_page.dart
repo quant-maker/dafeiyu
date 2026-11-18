@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import 'comfy.dart';
@@ -28,7 +29,7 @@ class _ComfyPageState extends State<ComfyPage> {
   String _stage = '';
   List<Uint8List> _results = const [];
 
-  ComfyClient get _client => ComfyClient.resolved(widget.baseUrl);
+  ComfyClient get _client => ComfyClient.resolved(widget.baseUrl, web: kIsWeb);
 
   @override
   void initState() {

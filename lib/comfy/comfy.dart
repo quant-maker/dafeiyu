@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 
 /// Minimal client for a local ComfyUI instance.
@@ -14,11 +13,13 @@ class ComfyClient {
   ComfyClient(this.baseUrl);
 
   /// Browsers cannot call another port cross-origin, so on web everything goes
-  /// through the local server's /comfy proxy instead.
-  static String resolve(String configured) =>
-      kIsWeb ? '${Uri.base.origin}/comfy' : configured;
+  /// through the local server's /comfy proxy instead. The caller decides which
+  /// world it is in, which keeps this file free of Flutter imports.
+  static String resolve(String configured, {bool web = false}) =>
+      web ? '${Uri.base.origin}/comfy' : configured;
 
-  factory ComfyClient.resolved(String configured) => ComfyClient(resolve(configured));
+  factory ComfyClient.resolved(String configured, {bool web = false}) =>
+      ComfyClient(resolve(configured, web: web));
 
   final String baseUrl;
 
@@ -59,6 +60,24 @@ class ComfyClient {
           body: jsonEncode({'clear': true}),
         )
         .timeout(const Duration(seconds: 10));
+  }
+
+  /// Pushes a picture into ComfyUI's input folder and returns its name, which
+  /// is what a LoadImage node expects.
+  Future<String> uploadImage(List<int> bytes, {String? name}) async {
+    final filename = name ?? 'feiyu_${DateTime.now().millisecondsSinceEpoch}.png';
+    final req = http.MultipartRequest('POST', Uri.parse('$_base/upload/image'))
+      ..files.add(http.MultipartFile.fromBytes('image', bytes, filename: filename))
+      ..fields['overwrite'] = 'true';
+    final res = await req.send().timeout(const Duration(seconds: 30));
+    final body = await res.stream.bytesToString();
+    if (res.statusCode != 200) {
+      throw Exception('上传图片失败 HTTP ${res.statusCode}: ${_short(body)}');
+    }
+    final j = jsonDecode(body) as Map<String, dynamic>;
+    final uploaded = (j['name'] ?? filename) as String;
+    final sub = (j['subfolder'] ?? '') as String;
+    return sub.isEmpty ? uploaded : '$sub/$uploaded';
   }
 
   /// Submits a workflow and returns the prompt id.
@@ -140,6 +159,7 @@ Map<String, dynamic> patchWorkflow(
   required String prompt,
   String negative = '',
   int? seed,
+  String? imageName,
 }) {
   final wf = jsonDecode(jsonEncode(workflow)) as Map<String, dynamic>;
 
@@ -153,12 +173,12 @@ Map<String, dynamic> patchWorkflow(
       break;
     }
   }
-  if (samplerId == null) {
+  if (samplerId == null && prompt.trim().isNotEmpty) {
     throw Exception('这个工作流里找不到采样器（KSampler），请用「Save (API Format)」导出的完整工作流');
   }
 
-  final sampler = wf[samplerId] as Map<String, dynamic>;
-  final inputs = (sampler['inputs'] ?? <String, dynamic>{}) as Map<String, dynamic>;
+  final sampler = samplerId == null ? null : wf[samplerId] as Map<String, dynamic>;
+  final inputs = (sampler?['inputs'] ?? <String, dynamic>{}) as Map<String, dynamic>;
 
   void applyText(String key, String text) {
     if (text.isEmpty) return;
@@ -173,6 +193,23 @@ Map<String, dynamic> patchWorkflow(
 
   applyText('positive', prompt);
   applyText('negative', negative);
+
+  // Feed the uploaded picture into the first LoadImage node.
+  if (imageName != null && imageName.isNotEmpty) {
+    var replaced = false;
+    for (final node in wf.values) {
+      if (node is! Map) continue;
+      if ((node['class_type'] ?? '') != 'LoadImage') continue;
+      final ni = node['inputs'];
+      if (ni is Map) {
+        ni['image'] = imageName;
+        replaced = true;
+      }
+    }
+    if (!replaced) {
+      throw Exception('这个工作流的图片输入不是 LoadImage 节点，暂不支持');
+    }
+  }
 
   for (final node in wf.values) {
     if (node is! Map) continue;

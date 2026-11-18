@@ -87,6 +87,8 @@ class Settings {
   String sceneImage;
   String comfyUrl;
   String comfyWorkflow;
+  String comfyWorkflowRemoveBg;
+  String comfyWorkflowEdit;
   String embeddingModel;
   String asrModel;
   String asrPreset;
@@ -118,6 +120,8 @@ class Settings {
     this.sceneImage = '',
     this.comfyUrl = 'http://192.168.1.10:8188',
     this.comfyWorkflow = '',
+    this.comfyWorkflowRemoveBg = '',
+    this.comfyWorkflowEdit = '',
     this.embeddingModel = 'Qwen/Qwen3-Embedding-4B',
     this.asrModel = 'gpt-4o-mini-transcribe',
     this.asrPreset = 'same',
@@ -167,6 +171,8 @@ class Settings {
       sceneImage: (j['sceneImage'] ?? '') as String? ?? '',
       comfyUrl: pick(j['comfyUrl'] as String?, 'http://192.168.1.10:8188'),
       comfyWorkflow: (j['comfyWorkflow'] ?? '') as String? ?? '',
+      comfyWorkflowRemoveBg: (j['comfyWorkflowRemoveBg'] ?? '') as String? ?? '',
+      comfyWorkflowEdit: (j['comfyWorkflowEdit'] ?? '') as String? ?? '',
       embeddingModel: pick(j['embeddingModel'] as String?, 'Qwen/Qwen3-Embedding-4B'),
       asrModel: pick(j['asrModel'] as String?, 'gpt-4o-mini-transcribe'),
       asrPreset: pick(j['asrPreset'] as String?, 'same'),
@@ -213,6 +219,8 @@ class Settings {
         'sceneImage': sceneImage,
         'comfyUrl': comfyUrl,
         'comfyWorkflow': comfyWorkflow,
+        'comfyWorkflowRemoveBg': comfyWorkflowRemoveBg,
+        'comfyWorkflowEdit': comfyWorkflowEdit,
         'embeddingModel': embeddingModel,
         'asrModel': asrModel,
         'asrPreset': asrPreset,
@@ -847,6 +855,30 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     {
       'type': 'function',
       'function': {
+        'name': 'remove_bg',
+        'description': '把对话里最近的一张图片去掉背景（用主人电脑上的 ComfyUI 抠图工作流）。'
+            '主人说"去掉背景/抠图/只要人"时用它。',
+        'parameters': {'type': 'object', 'properties': {}},
+      },
+    },
+    {
+      'type': 'function',
+      'function': {
+        'name': 'edit_image',
+        'description': '按主人的要求修改对话里最近的一张图片（改风格、改内容、加东西、换背景等），'
+            '用主人电脑上的 ComfyUI 图片编辑工作流。',
+        'parameters': {
+          'type': 'object',
+          'properties': {
+            'instruction': {'type': 'string', 'description': '要改成什么样（建议英文）'},
+          },
+          'required': ['instruction'],
+        },
+      },
+    },
+    {
+      'type': 'function',
+      'function': {
         'name': 'footprint',
         'description': '把这一刻收进「足迹」——只有当你真的觉得这段对话里有值得记住的瞬间时才用：'
             '一次心意、一个新发现、一句戳中的话、一个共同的小胜利。'
@@ -882,6 +914,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           '② remember 把值得长期记住的事记下来（对方的偏好、约定、正在做的项目、重要经历），'
           '一条一句话，不要记流水账；'
           '③ draw 在主人电脑上的 ComfyUI 里画图，画好会自动出现在对话里；'
+          '④ remove_bg 去掉对话里最近一张图的背景；⑤ edit_image 按描述修改那张图；'
           '④ footprint 把当下这一刻收进足迹——只有真的打动你、值得多年后回看的瞬间才用，'
           '普通对话不用记。宁可漏记，也不要为了记录而记录。'
           '抓到内容后用自己的话答，别整段照抄。',
@@ -1131,35 +1164,62 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       debugPrint('[feiyu] footprint kept: $title');
       return '已收进足迹：$title';
     }
-    if (name == 'draw') {
+    if (name == 'draw' || name == 'remove_bg' || name == 'edit_image') {
       final s = _settings;
       if (s == null) return '还没设置';
-      if (s.comfyWorkflow.trim().isEmpty) {
-        return '电脑上的 ComfyUI 还没配置：去设置 → ComfyUI，粘贴一段「Save (API Format)」导出的工作流 JSON';
+
+      final isDraw = name == 'draw';
+      final wfRaw = isDraw
+          ? s.comfyWorkflow
+          : name == 'remove_bg'
+              ? s.comfyWorkflowRemoveBg
+              : s.comfyWorkflowEdit;
+      if (wfRaw.trim().isEmpty) {
+        final which = isDraw ? '文生图' : name == 'remove_bg' ? '去背景' : '图片编辑';
+        return '还没配置「$which」工作流：去设置 → ComfyUI，把对应的「Save (API Format)」JSON 粘进去';
       }
-      final prompt = (args['prompt'] ?? '').toString().trim();
-      if (prompt.isEmpty) return '要画什么？给我一句画面描述';
+
+      final prompt = (args['prompt'] ?? args['instruction'] ?? '').toString().trim();
+      if (isDraw && prompt.isEmpty) return '要画什么？给我一句画面描述';
+
+      // Image-in workflows need the picture from the conversation.
+      String? uploaded;
+      if (!isDraw) {
+        final src = _lastImageBase64();
+        if (src == null) return '对话里还没有图片，先发一张给我';
+        final client = ComfyClient.resolved(s.comfyUrl, web: kIsWeb);
+        if (!await client.ping()) return '连不上 ${s.comfyUrl}，检查电脑上的 ComfyUI';
+        if (mounted) setState(() => _activity = '正在上传图片…');
+        try {
+          uploaded = await client.uploadImage(base64Decode(src));
+        } catch (e) {
+          if (mounted) setState(() => _activity = '');
+          return '图片上传失败：$e';
+        }
+      }
 
       final client = ComfyClient.resolved(s.comfyUrl);
       if (!await client.ping()) return '连不上 ${s.comfyUrl}，检查电脑上的 ComfyUI 是否开着、是否同一局域网';
 
-      if (mounted) setState(() => _activity = '正在作画…');
+      final label = isDraw ? '正在作画…' : name == 'remove_bg' ? '正在抠图…' : '正在改图…';
+      if (mounted) setState(() => _activity = label);
       try {
-        final wf = jsonDecode(s.comfyWorkflow) as Map<String, dynamic>;
+        final wf = jsonDecode(wfRaw) as Map<String, dynamic>;
         final patched = patchWorkflow(
           wf,
           prompt: prompt,
           negative: (args['negative'] ?? '').toString(),
           seed: DateTime.now().millisecondsSinceEpoch % 1000000007,
+          imageName: uploaded,
         );
         final id = await client.submit(patched);
         final images = await client.waitForImages(
           id,
           onTick: (elapsed) {
-            if (mounted) setState(() => _activity = '正在作画… ${elapsed.inSeconds}s');
+            if (mounted) setState(() => _activity = '$label ${elapsed.inSeconds}s');
           },
         );
-        if (images.isEmpty) return '这次没画出东西，检查一下工作流';
+        if (images.isEmpty) return '这次没出图，检查一下工作流';
         if (mounted) {
           setState(() {
             _activity = '';
@@ -1168,10 +1228,10 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           _scrollToEnd();
           unawaited(ChatStore.save(_messages));
         }
-        return '画好了（${images.length} 张）';
+        return isDraw ? '画好了（${images.length} 张）' : '处理好了';
       } catch (e) {
         if (mounted) setState(() => _activity = '');
-        return '作画失败：$e';
+        return '处理失败：$e';
       }
     }
     if (name == 'recall') {
@@ -1441,6 +1501,15 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       _scrollToEnd();
     }
     if (mounted) unawaited(ChatStore.save(_messages));
+  }
+
+  /// The most recent picture the owner sent or that she produced.
+  String? _lastImageBase64() {
+    for (var i = _messages.length - 1; i >= 0; i--) {
+      final img = _messages[i].imageBase64;
+      if (img != null && img.isNotEmpty) return img;
+    }
+    return null;
   }
 
   // ---------------- memory layers ----------------
@@ -2107,6 +2176,8 @@ class _SettingsPageState extends State<SettingsPage> {
   late bool _visionEnabled;
   late final TextEditingController _comfyUrl;
   late final TextEditingController _comfyWorkflow;
+  late final TextEditingController _comfyRemoveBg;
+  late final TextEditingController _comfyEdit;
   late String _visionProvider;
   late final TextEditingController _visionBase;
   late final TextEditingController _visionKey;
@@ -2145,6 +2216,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _visionEnabled = widget.initial.visionEnabled;
     _comfyUrl = TextEditingController(text: widget.initial.comfyUrl);
     _comfyWorkflow = TextEditingController(text: widget.initial.comfyWorkflow);
+    _comfyRemoveBg = TextEditingController(text: widget.initial.comfyWorkflowRemoveBg);
+    _comfyEdit = TextEditingController(text: widget.initial.comfyWorkflowEdit);
     _visionProvider = widget.initial.visionProvider;
     _visionBase = TextEditingController(text: widget.initial.visionBaseUrl);
     _visionKey = TextEditingController(text: widget.initial.visionApiKey);
@@ -2164,6 +2237,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _visionModel.dispose();
     _comfyUrl.dispose();
     _comfyWorkflow.dispose();
+    _comfyRemoveBg.dispose();
+    _comfyEdit.dispose();
     _key.dispose();
     _model.dispose();
     _persona.dispose();
@@ -2266,6 +2341,8 @@ class _SettingsPageState extends State<SettingsPage> {
       visionModel: _visionModel.text.trim(),
       comfyUrl: _comfyUrl.text.trim().isEmpty ? 'http://192.168.1.10:8188' : _comfyUrl.text.trim(),
       comfyWorkflow: _comfyWorkflow.text,
+      comfyWorkflowRemoveBg: _comfyRemoveBg.text,
+      comfyWorkflowEdit: _comfyEdit.text,
     ));
   }
 
@@ -2583,14 +2660,39 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ),
           const SizedBox(height: 8),
+          const _Label('文生图工作流（她调用 draw 时用）'),
           TextField(
             controller: _comfyWorkflow,
-            minLines: 3,
-            maxLines: 8,
+            minLines: 2,
+            maxLines: 6,
             decoration: const InputDecoration(
-              hintText: '在 ComfyUI 里用「Save (API Format)」导出工作流，把 JSON 粘到这里',
+              hintText: '「Save (API Format)」导出的 JSON',
               isDense: true,
               helperText: '提示词会自动写进采样器的正向/负向输入',
+            ),
+          ),
+          const SizedBox(height: 12),
+          const _Label('去背景工作流（调用 remove_bg 时用）'),
+          TextField(
+            controller: _comfyRemoveBg,
+            minLines: 2,
+            maxLines: 6,
+            decoration: const InputDecoration(
+              hintText: '需要一个 LoadImage + 抠图节点 + SaveImage 的工作流',
+              isDense: true,
+              helperText: '例：ComfyUI-rembg / BRIA RMBG / INSPYRENET 等自定义节点',
+            ),
+          ),
+          const SizedBox(height: 12),
+          const _Label('图片编辑工作流（调用 edit_image 时用）'),
+          TextField(
+            controller: _comfyEdit,
+            minLines: 2,
+            maxLines: 6,
+            decoration: const InputDecoration(
+              hintText: 'LoadImage → 编辑节点（img2img / inpaint / Kontext / Qwen-Edit）→ SaveImage',
+              isDense: true,
+              helperText: '对话里最近一张图会被自动上传并注入 LoadImage',
             ),
           ),
           SwitchListTile(
