@@ -45,6 +45,18 @@ String defaultBaseUrl() {
   return kGatewayBase;
 }
 
+const kComfyImg2ImgWorkflow = r"""{
+  "1": {"class_type": "LoadImage", "inputs": {"image": ""}},
+  "2": {"class_type": "ImageScale", "inputs": {"upscale_method": "lanczos", "width": 512, "height": 512, "crop": "center", "image": ["1", 0]}},
+  "3": {"class_type": "VAEEncode", "inputs": {"pixels": ["2", 0], "vae": ["4", 2]}},
+  "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "sd_turbo.safetensors"}},
+  "5": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}},
+  "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}},
+  "7": {"class_type": "KSampler", "inputs": {"seed": 1, "steps": 3, "cfg": 1.0, "sampler_name": "euler", "scheduler": "normal", "denoise": 0.55, "model": ["4", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["3", 0]}},
+  "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["4", 2]}},
+  "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "feiyu_edit"}}
+}""";
+
 const kComfySdTurboWorkflow = r"""{
   "3": {"class_type": "KSampler", "inputs": {"seed": 1, "steps": 2, "cfg": 1.0, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
   "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "sd_turbo.safetensors"}},
@@ -2716,6 +2728,14 @@ class _SettingsPageState extends State<SettingsPage> {
               hintText: 'LoadImage → 编辑节点（img2img / inpaint / Kontext / Qwen-Edit）→ SaveImage',
               isDense: true,
               helperText: '对话里最近一张图会被自动上传并注入 LoadImage',
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => setState(() => _comfyEdit.text = kComfyImg2ImgWorkflow),
+              icon: const Icon(Icons.auto_fix_high, size: 16),
+              label: const Text('填入示例（SD-Turbo img2img）', style: TextStyle(fontSize: 12)),
             ),
           ),
           SwitchListTile(
