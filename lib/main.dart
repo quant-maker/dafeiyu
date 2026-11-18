@@ -1140,7 +1140,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       final prompt = (args['prompt'] ?? '').toString().trim();
       if (prompt.isEmpty) return '要画什么？给我一句画面描述';
 
-      final client = ComfyClient(s.comfyUrl);
+      final client = ComfyClient.resolved(s.comfyUrl);
       if (!await client.ping()) return '连不上 ${s.comfyUrl}，检查电脑上的 ComfyUI 是否开着、是否同一局域网';
 
       if (mounted) setState(() => _activity = '正在作画…');

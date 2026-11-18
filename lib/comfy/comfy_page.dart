@@ -28,7 +28,7 @@ class _ComfyPageState extends State<ComfyPage> {
   String _stage = '';
   List<Uint8List> _results = const [];
 
-  ComfyClient get _client => ComfyClient(widget.baseUrl);
+  ComfyClient get _client => ComfyClient.resolved(widget.baseUrl);
 
   @override
   void initState() {

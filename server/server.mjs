@@ -134,8 +134,40 @@ function fetchPage(req, res) {
   })
 }
 
+// ComfyUI lives on another port (e.g. 8188), so browsers block direct calls.
+// This forwards /comfy/* to it, keeping the page same-origin.
+const COMFY = process.env.FEIYU_COMFY || 'http://127.0.0.1:8188'
+
+function proxyComfy(req, res) {
+  const suffix = (req.url || '').replace(/^\/comfy/, '') || '/'
+  let target
+  try {
+    target = new URL(suffix, COMFY)
+  } catch (e) {
+    res.writeHead(400).end('bad comfy url')
+    return
+  }
+  const lib = target.protocol === 'https:' ? https : http
+  const headers = { ...req.headers, host: target.host }
+  delete headers['accept-encoding']
+
+  const upstream = lib.request(
+    { hostname: target.hostname, port: target.port || 80, path: target.pathname + target.search, method: req.method, headers },
+    (up) => {
+      res.writeHead(up.statusCode || 502, up.headers)
+      up.pipe(res)
+    },
+  )
+  upstream.on('error', (e) => {
+    if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
+    res.end('comfy proxy error: ' + e.message)
+  })
+  req.pipe(upstream)
+}
+
 const server = http.createServer((req, res) => {
   if ((req.url || '').startsWith('/v1/') || req.url === '/v1') return proxyApi(req, res)
+if ((req.url || '').startsWith('/comfy')) return proxyComfy(req, res)
   if ((req.url || '').startsWith('/fetch')) return fetchPage(req, res)
   if (req.url === '/healthz') return res.writeHead(200).end('ok')
   return serveStatic(req, res)

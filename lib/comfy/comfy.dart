@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 
 /// Minimal client for a local ComfyUI instance.
@@ -11,6 +12,13 @@ import 'package:http/http.dart' as http;
 /// owner switches between SD1.5 / SDXL / Flux graphs.
 class ComfyClient {
   ComfyClient(this.baseUrl);
+
+  /// Browsers cannot call another port cross-origin, so on web everything goes
+  /// through the local server's /comfy proxy instead.
+  static String resolve(String configured) =>
+      kIsWeb ? '${Uri.base.origin}/comfy' : configured;
+
+  factory ComfyClient.resolved(String configured) => ComfyClient(resolve(configured));
 
   final String baseUrl;
 
