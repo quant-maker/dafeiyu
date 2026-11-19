@@ -1217,9 +1217,9 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       } else {
         if (name == 'remove_bg') {
           // ComfyUI-RMBG installed => we can build the graph ourselves.
-          final nodes = await client.hasNodes(['BiRefNetRMBG', 'JoinImageWithAlpha']);
+          final nodes = await client.hasNodes(['RMBG', 'JoinImageWithAlpha']);
           if (!nodes) {
-            return '去背景需要 ComfyUI-RMBG 节点（BiRefNetRMBG + JoinImageWithAlpha），'
+            return '去背景需要 ComfyUI-RMBG 节点（RMBG + JoinImageWithAlpha），'
                 '你的 ComfyUI 里没有装，所以这项暂时用不了。';
           }
           wf = defaultRemoveBg();

@@ -328,8 +328,9 @@ Map<String, dynamic> defaultImg2Img(
   };
 }
 
-/// Background removal: downscale (CPU runs it much faster), cut out, keep alpha.
-Map<String, dynamic> defaultRemoveBg({int size = 512, String model = 'BiRefNet_512x512'}) {
+/// Background removal: downscale first (CPU is slow at high res), then cut out
+/// with the RMBG node's fast INSPYRENET model and keep the alpha channel.
+Map<String, dynamic> defaultRemoveBg({int size = 512, String model = 'INSPYRENET'}) {
   return {
     '1': {
       'class_type': 'LoadImage',
@@ -346,8 +347,21 @@ Map<String, dynamic> defaultRemoveBg({int size = 512, String model = 'BiRefNet_5
       },
     },
     '3': {
-      'class_type': 'BiRefNetRMBG',
-      'inputs': {'image': ['2', 0], 'model': model},
+      'class_type': 'RMBG',
+      'inputs': {
+        'image': ['2', 0],
+        'model': model,
+        // The node reads these directly; omitting them raises KeyError.
+        'sensitivity': 1.0,
+        'process_res': size,
+        'mask_blur': 0,
+        'mask_offset': 0,
+        'invert_output': false,
+        'refine_foreground': false,
+        'unload_model': false,
+        'background': 'Alpha',
+        'background_color': '#222222',
+      },
     },
     '4': {
       'class_type': 'JoinImageWithAlpha',
