@@ -19,6 +19,7 @@ import 'providers.dart';
 import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'ui/chat_app_bar.dart';
+import 'ui/layout.dart';
 import 'ui/message_list.dart';
 import 'ui/scrim.dart';
 import 'ui/theme.dart';
@@ -1735,6 +1736,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       mood: _mood,
       child: Scaffold(
         backgroundColor: Colors.transparent,
+        extendBodyBehindAppBar: true,
         appBar: ChatAppBar(
           title: '大肥鱼',
           status: _statusLine(),
@@ -1747,16 +1749,19 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         body: Stack(
           children: [
             const Positioned.fill(child: ReadabilityScrim()),
-            Column(
-              children: [
-                if (_error != null) _errorBar(),
-                Expanded(
-                  child: _messages.isEmpty ? _emptyState() : _messageList(),
-                ),
-                if (_pendingImage != null) _pendingImageBar(),
-                if (_listening) _listeningBar(),
-                _composer(),
-              ],
+            ContentFrame(
+              padding: EdgeInsets.zero,
+              child: Column(
+                children: [
+                  if (_error != null) _errorBar(),
+                  Expanded(
+                    child: _messages.isEmpty ? _emptyState() : _messageList(),
+                  ),
+                  if (_pendingImage != null) _pendingImageBar(),
+                  if (_listening) _listeningBar(),
+                  _composer(),
+                ],
+              ),
             ),
           ],
         ),
