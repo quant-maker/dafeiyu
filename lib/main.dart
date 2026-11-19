@@ -18,6 +18,7 @@ import 'feeds/footprints.dart';
 import 'providers.dart';
 import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
+import 'ui/theme.dart';
 import 'scene/scene_stage.dart';
 import 'voice/local_asr_web.dart' if (dart.library.io) 'voice/local_asr_io.dart';
 import 'voice/local_tts_web.dart' if (dart.library.io) 'voice/local_tts_io.dart';
@@ -376,15 +377,10 @@ class FeiyuApp extends StatelessWidget {
   const FeiyuApp({super.key});
   @override
   Widget build(BuildContext context) {
-    final scheme = ColorScheme.fromSeed(seedColor: const Color(0xFF4AA3FF), brightness: Brightness.dark);
     return MaterialApp(
       title: '大肥鱼',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: scheme,
-        scaffoldBackgroundColor: const Color(0xFF0B1220),
-      ),
+      theme: AppTheme.dark(),
       home: const ChatPage(),
     );
   }
