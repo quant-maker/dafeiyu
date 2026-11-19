@@ -18,6 +18,7 @@ import 'feeds/footprints.dart';
 import 'providers.dart';
 import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
+import 'ui/chat_app_bar.dart';
 import 'ui/theme.dart';
 import 'scene/scene_stage.dart';
 import 'voice/local_asr_web.dart' if (dart.library.io) 'voice/local_asr_io.dart';
@@ -1735,44 +1736,14 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       mood: _mood,
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        appBar: AppBar(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          centerTitle: false,
-          titleSpacing: 16,
-          title: Row(
-            children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: const LinearGradient(colors: [Color(0xFF7CC4FF), Color(0xFF2F6FD0)]),
-                  boxShadow: [BoxShadow(color: const Color(0xFF4AA3FF).withValues(alpha: .35), blurRadius: 12)],
-                ),
-                child: const Center(child: Text('🐟', style: TextStyle(fontSize: 18))),
-              ),
-              const SizedBox(width: 10),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text('大肥鱼', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600, letterSpacing: .3)),
-                  Text(
-                    _statusLine(),
-                    style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: .5)),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          actions: [
-            IconButton(onPressed: _openFootprints, icon: const Icon(Icons.photo_library_outlined), tooltip: '她的足迹'),
-            IconButton(onPressed: _openComfy, icon: const Icon(Icons.brush_outlined), tooltip: '画画（ComfyUI）'),
-            IconButton(onPressed: _clear, icon: const Icon(Icons.auto_awesome_outlined), tooltip: '新会话'),
-            IconButton(onPressed: _openSettings, icon: const Icon(Icons.tune), tooltip: '设置'),
-            const SizedBox(width: 4),
-          ],
+        appBar: ChatAppBar(
+          title: '大肥鱼',
+          status: _statusLine(),
+          mood: _mood,
+          onFootprints: _openFootprints,
+          onComfy: _openComfy,
+          onNewChat: _clear,
+          onSettings: _openSettings,
         ),
         body: Column(
           children: [
