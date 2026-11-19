@@ -4,6 +4,9 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
+import '../ui/layout.dart';
+import '../ui/surfaces.dart';
+import '../ui/tokens.dart';
 import 'comfy.dart';
 
 /// A phone-sized console for the ComfyUI running on the desk computer.
@@ -118,86 +121,130 @@ class _ComfyPageState extends State<ComfyPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0B1220),
+      backgroundColor: AppPalette.ink,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF101A2C),
+        backgroundColor: Colors.transparent,
+        scrolledUnderElevation: 0,
         title: const Text('ComfyUI'),
         actions: [
-          IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh), tooltip: '刷新状态'),
+          GhostIconButton(
+            icon: Icons.refresh,
+            tooltip: '刷新状态',
+            onPressed: _refresh,
+          ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
-        children: [
-          _statusCard(),
-          const SizedBox(height: 14),
-          TextField(
-            controller: _prompt,
-            minLines: 3,
-            maxLines: 6,
-            decoration: const InputDecoration(
-              labelText: '提示词',
-              hintText: '一只胖胖的小鲸鱼，坐在深夜窗边，暖色台灯…',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _negative,
-            decoration: const InputDecoration(
-              labelText: '反向提示词（可空）',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: _busy || !_online ? null : _generate,
-                  icon: _busy
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.auto_awesome, size: 18),
-                  label: Text(_busy ? (_stage.isEmpty ? '生成中…' : _stage) : '生成'),
-                ),
+      body: ContentFrame(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(0, 12, 0, 40),
+          children: [
+            _statusCard(),
+            const SizedBox(height: AppSpacing.l),
+            TextField(
+              controller: _prompt,
+              minLines: 3,
+              maxLines: 6,
+              decoration: const InputDecoration(
+                labelText: '提示词',
+                hintText: '一只胖胖的小鲸鱼，坐在深夜窗边，暖色台灯…',
               ),
-              const SizedBox(width: 10),
-              OutlinedButton(
-                onPressed: _online
-                    ? () async {
-                        await _client.clearQueue();
-                        await _refresh();
-                      }
-                    : null,
-                child: const Text('清队列'),
+            ),
+            const SizedBox(height: AppSpacing.m),
+            TextField(
+              controller: _negative,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: '反向提示词（可空）',
               ),
-            ],
-          ),
-          if (_error != null) ...[
-            const SizedBox(height: 12),
-            Text(_error!, style: const TextStyle(color: Color(0xFFFF9A9A), fontSize: 12.5)),
-          ],
-          if (_busy) ...[
-            const SizedBox(height: 16),
-            const LinearProgressIndicator(),
-          ],
-          if (_results.isNotEmpty) ...[
-            const SizedBox(height: 18),
-            for (var i = 0; i < _results.length; i++)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: GestureDetector(
-                  onTap: () => _openFull(context, _results[i]),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(14),
-                    child: Image.memory(_results[i], fit: BoxFit.contain),
+            ),
+            const SizedBox(height: AppSpacing.l),
+            Row(
+              children: [
+                Expanded(
+                  child: PrimaryButton(
+                    label: '生成',
+                    loading: _busy,
+                    onPressed: _busy || !_online ? null : _generate,
                   ),
                 ),
+                const SizedBox(width: AppSpacing.m),
+                TextButton(
+                  onPressed: _online
+                      ? () async {
+                          await _client.clearQueue();
+                          await _refresh();
+                        }
+                      : null,
+                  child: const Text('清队列'),
+                ),
+              ],
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: AppSpacing.m),
+              InlineNotice(tone: NoticeTone.danger, message: _error!),
+            ],
+            if (_busy) ...[
+              const SizedBox(height: AppSpacing.l),
+              const LinearProgressIndicator(),
+              if (_stage.isNotEmpty) ...[
+                const SizedBox(height: AppSpacing.s),
+                Text(
+                  _stage,
+                  style: AppType.caption.copyWith(color: AppPalette.text2),
+                ),
+              ],
+            ],
+            if (_results.isNotEmpty) ...[
+              const SizedBox(height: AppSpacing.l),
+              LayoutBuilder(
+                builder: (BuildContext context, BoxConstraints constraints) {
+                  if (constraints.maxWidth >= 600) {
+                    return GridView.count(
+                      crossAxisCount: 2,
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      mainAxisSpacing: 12,
+                      crossAxisSpacing: 12,
+                      childAspectRatio: 1,
+                      children: [
+                        for (final bytes in _results)
+                          _thumbnail(context, bytes),
+                      ],
+                    );
+                  }
+                  return Column(
+                    children: [
+                      for (var i = 0; i < _results.length; i++)
+                        Padding(
+                          padding: EdgeInsets.only(
+                            bottom: i == _results.length - 1 ? 0 : 12,
+                          ),
+                          child: AspectRatio(
+                            aspectRatio: 1,
+                            child: _thumbnail(context, _results[i]),
+                          ),
+                        ),
+                    ],
+                  );
+                },
               ),
+            ],
           ],
-        ],
+        ),
+      ),
+    );
+  }
+
+  Widget _thumbnail(BuildContext context, Uint8List bytes) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(AppRadii.l),
+      child: GestureDetector(
+        onTap: () => _openFull(context, bytes),
+        child: Image.memory(
+          bytes,
+          fit: BoxFit.cover,
+          semanticLabel: '生成结果',
+        ),
       ),
     );
   }
@@ -214,41 +261,51 @@ class _ComfyPageState extends State<ComfyPage> {
   }
 
   Widget _statusCard() {
-    final color = _checking
-        ? Colors.white54
+    final Color color = _checking
+        ? AppPalette.text3
         : _online
-            ? const Color(0xFF6BD08B)
-            : const Color(0xFFFF8A8A);
-    final label = _checking
+            ? AppPalette.mint
+            : AppPalette.danger;
+    final String label = _checking
         ? '检查连接…'
         : _online
             ? '已连接 · 队列 $_queue'
             : '连不上';
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF16223A),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withValues(alpha: .07)),
+        color: AppPalette.surfaceAlt,
+        borderRadius: BorderRadius.circular(AppRadii.l),
+        border: Border.all(color: AppPalette.line),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(width: 9, height: 9, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label, style: TextStyle(fontSize: 13, color: color)),
-                const SizedBox(height: 2),
-                Text(widget.baseUrl, style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: .38))),
-              ],
-            ),
+          Row(
+            children: [
+              StatusDot(color: color),
+              const SizedBox(width: AppSpacing.s),
+              Expanded(
+                child: Text(
+                  label,
+                  style: AppType.bodySmall.copyWith(color: color),
+                ),
+              ),
+            ],
           ),
-          if (!_checking && !_online)
-            Text('检查电脑上的 ComfyUI 是否开着、同一局域网',
-                style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: .35))),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            widget.baseUrl,
+            style: AppType.caption.copyWith(color: AppPalette.text3),
+          ),
+          if (!_checking && !_online) ...[
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              '检查电脑上的 ComfyUI 是否开着、同一局域网',
+              style: AppType.caption.copyWith(color: AppPalette.warm),
+            ),
+          ],
         ],
       ),
     );
