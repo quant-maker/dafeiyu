@@ -2213,6 +2213,8 @@ class _SettingsPageState extends State<SettingsPage> {
   late int _ttsSid;
   late double _ttsSpeed;
   bool _ttsModelReady = false;
+  String _comfyStatus = '';
+  bool _comfyTesting = false;
   bool _downloadingTts = false;
   double _ttsProgress = 0;
   late String _provider;
@@ -2313,6 +2315,33 @@ class _SettingsPageState extends State<SettingsPage> {
     final name = path.split('/').last.replaceAll('.webp', '');
     if (name == 'room') return '房间（默认）';
     return name.replaceFirst('room-', '房间·');
+  }
+
+  Future<void> _testComfy() async {
+    final url = _comfyUrl.text.trim().isEmpty ? 'http://192.168.1.10:8188' : _comfyUrl.text.trim();
+    setState(() {
+      _comfyTesting = true;
+      _comfyStatus = '正在连接 $url …';
+    });
+    final client = ComfyClient(url);
+    final ok = await client.ping(timeout: const Duration(seconds: 8));
+    if (!mounted) return;
+    if (ok) {
+      final ckpts = await client.checkpoints();
+      final nodes = await client.hasNodes(['RMBG']);
+      if (!mounted) return;
+      setState(() {
+        _comfyTesting = false;
+        _comfyStatus = '连上了 ✅  模型 ${ckpts.isEmpty ? "无" : ckpts.first}'
+            '${nodes ? " · 抠图节点已装" : ""}';
+      });
+    } else {
+      setState(() {
+        _comfyTesting = false;
+        _comfyStatus = '连不上 ❌ 检查：ComfyUI 是否开着（--listen 0.0.0.0）、'
+            '地址是否是这台电脑的局域网 IP、防火墙是否放行 8188';
+      });
+    }
   }
 
   Future<void> _downloadTts() async {
@@ -2708,6 +2737,22 @@ class _SettingsPageState extends State<SettingsPage> {
               helperText: '手机和电脑要在同一个局域网；ComfyUI 需以 --listen 0.0.0.0 启动',
             ),
           ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _comfyTesting ? null : _testComfy,
+              icon: const Icon(Icons.wifi_tethering, size: 16),
+              label: const Text('测试连接', style: TextStyle(fontSize: 12)),
+            ),
+          ),
+          if (_comfyStatus.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(
+                _comfyStatus,
+                style: const TextStyle(fontSize: 11.5, color: Color(0xFF9FD0FF)),
+              ),
+            ),
           const SizedBox(height: 8),
           const _Label('文生图工作流（她调用 draw 时用）'),
           TextField(
