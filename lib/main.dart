@@ -382,6 +382,46 @@ class ChatStore {
   }
 }
 
+/// debug-only preview, never persisted.
+///
+/// A deterministic set of messages used when the web build is opened with
+/// `?seed=1`. It must NOT be `const` because [Message] has no const
+/// constructor and its `content` is mutable.
+final List<Message> kPreviewMessages = <Message>[
+  Message(
+    'user',
+    '今天好累啊，感觉一整天都在开会。',
+    at: DateTime(2026, 11, 19, 9, 12),
+  ),
+  Message(
+    'assistant',
+    '辛苦啦，先把肩膀放松一下。要不要我帮你把明天要做的事列个小清单？',
+    at: DateTime(2026, 11, 19, 9, 14),
+  ),
+  Message(
+    'user',
+    'Sure, that would help. Could you keep it to three items?',
+    at: DateTime(2026, 11, 19, 9, 16),
+  ),
+  Message(
+    'assistant',
+    'Look, I found this little guy on the windowsill today.',
+    imageBase64:
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+    at: DateTime(2026, 11, 19, 9, 18),
+  ),
+  Message(
+    'user',
+    '好可爱！它叫什么名字？',
+    at: DateTime(2026, 11, 19, 9, 20),
+  ),
+  Message(
+    'assistant',
+    'I have not decided yet — maybe you could name it for me?',
+    at: DateTime(2026, 11, 19, 9, 22),
+  ),
+];
+
 class FeiyuApp extends StatelessWidget {
   const FeiyuApp({super.key});
   @override
@@ -404,7 +444,7 @@ class ChatPage extends StatefulWidget {
 class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin {
   final _input = TextEditingController();
   final _scroll = ScrollController();
-  final List<Message> _messages = [];
+  List<Message> _messages = [];
   final AudioRecorder _recorder = AudioRecorder();
   final FlutterTts _tts = FlutterTts();
   bool _recording = false;
@@ -429,10 +469,13 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   Timer? _idleTimer;
   int _proactiveCount = 0;
   bool _showJump = false;
+  // debug-only preview, never persisted
+  bool _preview = false;
 
   @override
   void initState() {
     super.initState();
+    _preview = kIsWeb && Uri.base.queryParameters['seed'] == '1';
     _scroll.addListener(_onScroll);
     Settings.load().then((s) {
       debugPrint('[feiyu] settings loaded base=${s.baseUrl} model=${s.model} keyLen=${s.apiKey.length}');
@@ -470,6 +513,11 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       debugPrint('[feiyu] footprints load FAILED: $e');
     });
     ChatStore.load().then((history) {
+      if (_preview) {
+        setState(() => _messages = List.of(kPreviewMessages));
+        _scrollToEnd(animate: false);
+        return;
+      }
       if (!mounted || history.isEmpty) return;
       setState(() {
         _messages
@@ -1362,6 +1410,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   // ---------------- proactive ----------------
 
   void _resetIdleTimer() {
+    if (_preview) return;
     _idleTimer?.cancel();
     final s = _settings;
     if (s == null || !s.proactiveEnabled) return;
