@@ -20,7 +20,7 @@ class LocalAsrFiles {
       'https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt';
 
   static Future<Directory> dir() async {
-    final base = Directory('${Platform.environment['HOME'] ?? '.'}');
+    final base = Directory(Platform.environment['HOME'] ?? '.');
     return base;
   }
 }

@@ -1,4 +1,4 @@
-/// On-device speech synthesis with Kokoro (via sherpa-onnx).
+// On-device speech synthesis with Kokoro (via sherpa-onnx).
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -14,7 +14,6 @@ class LocalTtsImpl {
   final Directory _dir;
   final AudioPlayer _player = AudioPlayer();
   sherpa.OfflineTts? _engine;
-  int _playing = 0;
 
   static const _bundleUrl =
       'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2';
@@ -120,7 +119,6 @@ class LocalTtsImpl {
       await _writeWav(path, audio.samples, audio.sampleRate);
       await _player.stop();
       await _player.play(DeviceFileSource(path));
-      _playing++;
       return true;
     } catch (_) {
       return false;

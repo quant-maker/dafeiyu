@@ -1,4 +1,4 @@
-/// On-device ASR: Dolphin (2025) by default, SenseVoice as the alternative.
+// On-device ASR: Dolphin (2025) by default, SenseVoice as the alternative.
 import 'dart:io';
 import 'dart:typed_data';
 

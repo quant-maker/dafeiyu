@@ -11,7 +11,6 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import 'comfy/comfy.dart';
 import 'comfy/comfy_page.dart';
@@ -297,7 +296,7 @@ class Memory {
 
   String asPrompt() {
     if (facts.isEmpty) return '';
-    return '你记得关于主人的这些事（长期记忆，自然使用，不要逐条复述）：\n' + facts.map((f) => '- $f').join('\n');
+    return '你记得关于主人的这些事（长期记忆，自然使用，不要逐条复述）：\n${facts.map((f) => '- $f').join('\n')}';
   }
 }
 
@@ -401,7 +400,6 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   final _input = TextEditingController();
   final _scroll = ScrollController();
   final List<Message> _messages = [];
-  final stt.SpeechToText _speech = stt.SpeechToText();
   final AudioRecorder _recorder = AudioRecorder();
   final FlutterTts _tts = FlutterTts();
   bool _recording = false;
@@ -1333,10 +1331,10 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
 
   static String _htmlToText(String html, int limit) {
     final text = html
-        .replaceAll(RegExp(r'(?is)<script.*?</script>'), ' ')
-        .replaceAll(RegExp(r'(?is)<style.*?</style>'), ' ')
-        .replaceAll(RegExp(r'(?is)<head.*?</head>'), ' ')
-        .replaceAll(RegExp(r'(?s)<[^>]+>'), ' ')
+        .replaceAll(RegExp(r'<script.*?</script>', caseSensitive: false, dotAll: true), ' ')
+        .replaceAll(RegExp(r'<style.*?</style>', caseSensitive: false, dotAll: true), ' ')
+        .replaceAll(RegExp(r'<head.*?</head>', caseSensitive: false, dotAll: true), ' ')
+        .replaceAll(RegExp(r'<[^>]+>', dotAll: true), ' ')
         .replaceAll('&nbsp;', ' ')
         .replaceAll('&lt;', '<')
         .replaceAll('&gt;', '>')
@@ -1574,7 +1572,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     final todays = _archive.entries.where((e) => e.day == key).toList();
     final pick = todays.length > 2 ? todays.sublist(todays.length - 2) : todays;
     if (pick.isEmpty) return '';
-    return '今天早些时候的摘要：\n' + pick.map((e) => '- ${e.text}').join('\n');
+    return '今天早些时候的摘要：\n${pick.map((e) => '- ${e.text}').join('\n')}';
   }
 
   /// Compress the backlog into one archive paragraph when it grows too long.
@@ -1632,7 +1630,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     final vector = await _embedder(s).embed(query);
     final hits = _archive.search(vector, query, k: 3);
     if (hits.isEmpty) return '没有找到相关的旧记录';
-    return '找到这些旧记录：\n' + hits.map((e) => '【${e.day}】${e.text}').join('\n\n');
+    return '找到这些旧记录：\n${hits.map((e) => '【${e.day}】${e.text}').join('\n\n')}';
   }
 
   // ---------------- footprints ----------------
@@ -2216,7 +2214,6 @@ class _SettingsPageState extends State<SettingsPage> {
   String _comfyStatus = '';
   bool _comfyTesting = false;
   bool _downloadingTts = false;
-  double _ttsProgress = 0;
   late String _provider;
   late Map<String, String> _keys;
   late final TextEditingController _asr;
@@ -2256,7 +2253,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _ttsSpeed = widget.initial.ttsSpeed;
     LocalTtsImpl.create().then((e) => e.ready).then((ok) {
       if (mounted) setState(() => _ttsModelReady = ok);
-    }).catchError((Object _) => false);
+    }).catchError((Object _) {});
     _provider = widget.initial.provider;
     _keys = Map.of(widget.initial.apiKeys);
     _asr = TextEditingController(text: widget.initial.asrModel);
@@ -2347,13 +2344,10 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _downloadTts() async {
     setState(() {
       _downloadingTts = true;
-      _ttsProgress = 0;
     });
     try {
       final engine = await LocalTtsImpl.create();
-      await engine.download(onProgress: (p) {
-        if (mounted) setState(() => _ttsProgress = p);
-      });
+      await engine.download();
       final ok = await engine.ready;
       if (mounted) setState(() => _ttsModelReady = ok);
     } catch (e) {
