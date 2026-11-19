@@ -4,6 +4,18 @@ import 'package:flutter/material.dart';
 
 import '../main.dart' show Message;
 import 'bubble.dart';
+import 'tokens.dart';
+
+/// Formats [at] as `HH:mm`, prefixed with `M月d日 ` when it is not today.
+/// Hand-rolled to avoid a dependency on `intl`.
+String _timeLabel(DateTime at) {
+  final DateTime now = DateTime.now();
+  final bool today =
+      at.year == now.year && at.month == now.month && at.day == now.day;
+  final String hh = at.hour.toString().padLeft(2, '0');
+  final String mm = at.minute.toString().padLeft(2, '0');
+  return today ? '$hh:$mm' : '${at.month}月${at.day}日 $hh:$mm';
+}
 
 /// Scrollable chat history rendered as a list of [MessageBubble]s.
 ///
@@ -49,6 +61,9 @@ class MessageList extends StatelessWidget {
             !mine && busy && waitingFirstToken && m.content.isEmpty;
         final bool showName =
             !mine && (i == 0 || messages[i - 1].role != 'assistant');
+        final bool showTime =
+            i == 0 ||
+            m.at.difference(messages[i - 1].at).inMinutes >= 5;
         final double gap;
         if (i == 0) {
           gap = 0;
@@ -70,15 +85,31 @@ class MessageList extends StatelessWidget {
                 ),
               );
 
-        return Padding(
-          padding: EdgeInsets.only(top: gap),
-          child: MessageBubble(
-            content: m.content,
-            mine: mine,
-            showName: showName,
-            image: image,
-            typing: typing,
-          ),
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            if (showTime)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Center(
+                  child: Text(
+                    _timeLabel(m.at),
+                    key: ValueKey<String>('time-$i'),
+                    style: AppType.caption.copyWith(color: AppPalette.text3),
+                  ),
+                ),
+              ),
+            Padding(
+              padding: EdgeInsets.only(top: gap),
+              child: MessageBubble(
+                content: m.content,
+                mine: mine,
+                showName: showName,
+                image: image,
+                typing: typing,
+              ),
+            ),
+          ],
         );
       },
     );
