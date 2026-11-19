@@ -38,6 +38,28 @@ class ComfyClient {
     }
   }
 
+  /// Checkpoints this ComfyUI can load. Empty means nothing is installed.
+  Future<List<String>> checkpoints() async {
+    try {
+      final res = await http
+          .get(Uri.parse('$_base/object_info/CheckpointLoaderSimple'))
+          .timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200) return const [];
+      final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      final node = (j['CheckpointLoaderSimple'] as Map?) ;
+      final required = (node?['input'] as Map?)?['required'] as Map?;
+      final ckpt = required?['ckpt_name'];
+      // shape: [[names...], {...}]
+      if (ckpt is List && ckpt.isNotEmpty) {
+        final names = ckpt.first;
+        if (names is List) return names.map((e) => e.toString()).toList();
+      }
+      return const [];
+    } catch (_) {
+      return const [];
+    }
+  }
+
   /// Runs in the background right now.
   Future<int> queueLength() async {
     try {
@@ -147,6 +169,129 @@ class ComfyClient {
   }
 
   static String _short(String s) => s.length > 160 ? s.substring(0, 160) : s;
+}
+
+/// SD-Turbo / LCM / Lightning style checkpoints converge in a handful of steps.
+bool isFastCheckpoint(String name) {
+  final n = name.toLowerCase();
+  return n.contains('turbo') || n.contains('lcm') || n.contains('lightning') || n.contains('schnell');
+}
+
+/// A plain text-to-image graph that works with the given checkpoint.
+Map<String, dynamic> defaultTxt2Img(
+  String ckptName, {
+  int size = 512,
+  int? steps,
+  double? cfg,
+}) {
+  final fast = isFastCheckpoint(ckptName);
+  return {
+    '3': {
+      'class_type': 'KSampler',
+      'inputs': {
+        'seed': 1,
+        'steps': steps ?? (fast ? 3 : 20),
+        'cfg': cfg ?? (fast ? 1.0 : 7.0),
+        'sampler_name': fast ? 'euler' : 'dpmpp_2m',
+        'scheduler': fast ? 'normal' : 'karras',
+        'denoise': 1.0,
+        'model': ['4', 0],
+        'positive': ['6', 0],
+        'negative': ['7', 0],
+        'latent_image': ['5', 0],
+      },
+    },
+    '4': {
+      'class_type': 'CheckpointLoaderSimple',
+      'inputs': {'ckpt_name': ckptName},
+    },
+    '5': {
+      'class_type': 'EmptyLatentImage',
+      'inputs': {'width': size, 'height': size, 'batch_size': 1},
+    },
+    '6': {
+      'class_type': 'CLIPTextEncode',
+      'inputs': {'text': '', 'clip': ['4', 1]},
+    },
+    '7': {
+      'class_type': 'CLIPTextEncode',
+      'inputs': {'text': '', 'clip': ['4', 1]},
+    },
+    '8': {
+      'class_type': 'VAEDecode',
+      'inputs': {'samples': ['3', 0], 'vae': ['4', 2]},
+    },
+    '9': {
+      'class_type': 'SaveImage',
+      'inputs': {'images': ['8', 0], 'filename_prefix': 'feiyu'},
+    },
+  };
+}
+
+/// Image-to-image: uploads the picture, re-encodes it and re-samples a bit.
+Map<String, dynamic> defaultImg2Img(
+  String ckptName, {
+  int size = 512,
+  int? steps,
+  double? cfg,
+  double denoise = 0.55,
+}) {
+  final fast = isFastCheckpoint(ckptName);
+  return {
+    '1': {
+      'class_type': 'LoadImage',
+      'inputs': {'image': ''},
+    },
+    '2': {
+      'class_type': 'ImageScale',
+      'inputs': {
+        'upscale_method': 'lanczos',
+        'width': size,
+        'height': size,
+        'crop': 'center',
+        'image': ['1', 0],
+      },
+    },
+    '3': {
+      'class_type': 'VAEEncode',
+      'inputs': {'pixels': ['2', 0], 'vae': ['4', 2]},
+    },
+    '4': {
+      'class_type': 'CheckpointLoaderSimple',
+      'inputs': {'ckpt_name': ckptName},
+    },
+    '5': {
+      'class_type': 'CLIPTextEncode',
+      'inputs': {'text': '', 'clip': ['4', 1]},
+    },
+    '6': {
+      'class_type': 'CLIPTextEncode',
+      'inputs': {'text': '', 'clip': ['4', 1]},
+    },
+    '7': {
+      'class_type': 'KSampler',
+      'inputs': {
+        'seed': 1,
+        'steps': steps ?? (fast ? 3 : 20),
+        'cfg': cfg ?? (fast ? 1.0 : 7.0),
+        'sampler_name': fast ? 'euler' : 'dpmpp_2m',
+        'scheduler': fast ? 'normal' : 'karras',
+        'denoise': denoise,
+        'model': ['4', 0],
+        'positive': ['5', 0],
+        'negative': ['6', 0],
+        'latent_image': ['3', 0],
+      },
+    },
+    '8': {
+      'class_type': 'VAEDecode',
+      'inputs': {'samples': ['7', 0], 'vae': ['4', 2]},
+    },
+    '9': {
+      'class_type': 'SaveImage',
+      'inputs': {'images': ['8', 0], 'filename_prefix': 'feiyu_edit'},
+    },
+  };
 }
 
 /// Puts the prompt into an exported workflow.

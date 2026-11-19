@@ -1191,26 +1191,49 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       if (s == null) return '还没设置';
 
       final isDraw = name == 'draw';
-      final wfRaw = isDraw
+      final prompt = (args['prompt'] ?? args['instruction'] ?? '').toString().trim();
+      if (isDraw && prompt.isEmpty) return '要画什么？给我一句画面描述';
+
+      final client = ComfyClient.resolved(s.comfyUrl, web: kIsWeb);
+      if (!await client.ping()) {
+        return '连不上 ${s.comfyUrl}：检查电脑上的 ComfyUI 是否开着、手机是否同一局域网';
+      }
+
+      // Prefer the workflow the owner configured; otherwise build one from the
+      // models this ComfyUI actually has, so nothing needs pasting.
+      final configured = isDraw
           ? s.comfyWorkflow
           : name == 'remove_bg'
               ? s.comfyWorkflowRemoveBg
               : s.comfyWorkflowEdit;
-      if (wfRaw.trim().isEmpty) {
-        final which = isDraw ? '文生图' : name == 'remove_bg' ? '去背景' : '图片编辑';
-        return '还没配置「$which」工作流：去设置 → ComfyUI，把对应的「Save (API Format)」JSON 粘进去';
+
+      Map<String, dynamic> wf;
+      if (configured.trim().isNotEmpty) {
+        try {
+          wf = jsonDecode(configured) as Map<String, dynamic>;
+        } catch (e) {
+          return '设置里那份工作流 JSON 解析失败：$e';
+        }
+      } else {
+        if (name == 'remove_bg') {
+          return '去背景要用专门的抠图节点（ComfyUI-RMBG、BRIA RMBG 之类），'
+              '你的 ComfyUI 里还没装，所以这项暂时用不了。装好之后把工作流粘进设置即可。';
+        }
+        final ckpts = await client.checkpoints();
+        if (ckpts.isEmpty) {
+          return '你的 ComfyUI 里一个模型都没有。先在 models/checkpoints 里放一个模型'
+              '（比如 SD-Turbo），我就能自己把工作流拼出来。';
+        }
+        final ckpt = ckpts.first;
+        wf = isDraw ? defaultTxt2Img(ckpt) : defaultImg2Img(ckpt);
+        debugPrint('[feiyu] auto workflow using $ckpt');
       }
 
-      final prompt = (args['prompt'] ?? args['instruction'] ?? '').toString().trim();
-      if (isDraw && prompt.isEmpty) return '要画什么？给我一句画面描述';
-
-      // Image-in workflows need the picture from the conversation.
+      // Image-in workflows need the newest picture from the conversation.
       String? uploaded;
       if (!isDraw) {
         final src = _lastImageBase64();
         if (src == null) return '对话里还没有图片，先发一张给我';
-        final client = ComfyClient.resolved(s.comfyUrl, web: kIsWeb);
-        if (!await client.ping()) return '连不上 ${s.comfyUrl}，检查电脑上的 ComfyUI';
         if (mounted) setState(() => _activity = '正在上传图片…');
         try {
           uploaded = await client.uploadImage(base64Decode(src));
@@ -1220,13 +1243,9 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         }
       }
 
-      final client = ComfyClient.resolved(s.comfyUrl);
-      if (!await client.ping()) return '连不上 ${s.comfyUrl}，检查电脑上的 ComfyUI 是否开着、是否同一局域网';
-
       final label = isDraw ? '正在作画…' : name == 'remove_bg' ? '正在抠图…' : '正在改图…';
       if (mounted) setState(() => _activity = label);
       try {
-        final wf = jsonDecode(wfRaw) as Map<String, dynamic>;
         final patched = patchWorkflow(
           wf,
           prompt: prompt,
@@ -1237,11 +1256,12 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         final id = await client.submit(patched);
         final images = await client.waitForImages(
           id,
+          timeout: const Duration(minutes: 10),
           onTick: (elapsed) {
             if (mounted) setState(() => _activity = '$label ${elapsed.inSeconds}s');
           },
         );
-        if (images.isEmpty) return '这次没出图，检查一下工作流';
+        if (images.isEmpty) return '这次没出图，检查一下 ComfyUI 那边的队列和日志';
         if (mounted) {
           setState(() {
             _activity = '';
