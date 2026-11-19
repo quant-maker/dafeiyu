@@ -20,6 +20,7 @@ import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'ui/chat_app_bar.dart';
 import 'ui/message_list.dart';
+import 'ui/scrim.dart';
 import 'ui/theme.dart';
 import 'scene/scene_stage.dart';
 import 'voice/local_asr_web.dart' if (dart.library.io) 'voice/local_asr_io.dart';
@@ -140,7 +141,7 @@ class Settings {
     this.memoryEnabled = true,
     this.proactiveEnabled = false,
     this.sceneEnabled = true,
-    this.sceneDim = .25,
+    this.sceneDim = .42,
     this.sceneImage = '',
     this.comfyUrl = 'http://192.168.1.10:8188',
     this.comfyWorkflow = '',
@@ -191,7 +192,7 @@ class Settings {
       memoryEnabled: j['memoryEnabled'] as bool? ?? true,
       proactiveEnabled: j['proactiveEnabled'] as bool? ?? false,
       sceneEnabled: j['sceneEnabled'] as bool? ?? true,
-      sceneDim: (j['sceneDim'] as num?)?.toDouble() ?? .25,
+      sceneDim: (j['sceneDim'] as num?)?.toDouble() ?? .42,
       sceneImage: (j['sceneImage'] ?? '') as String? ?? '',
       comfyUrl: pick(j['comfyUrl'] as String?, 'http://192.168.1.10:8188'),
       comfyWorkflow: (j['comfyWorkflow'] ?? '') as String? ?? '',
@@ -1729,7 +1730,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   Widget build(BuildContext context) {
     return SceneStage(
       enabled: _settings?.sceneEnabled ?? true,
-      dim: _settings?.sceneDim ?? .25,
+      dim: _settings?.sceneDim ?? .42,
       image: _settings?.sceneImage ?? '',
       mood: _mood,
       child: Scaffold(
@@ -1743,13 +1744,20 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           onNewChat: _clear,
           onSettings: _openSettings,
         ),
-        body: Column(
+        body: Stack(
           children: [
-            if (_error != null) _errorBar(),
-            Expanded(child: _messages.isEmpty ? _emptyState() : _messageList()),
-            if (_pendingImage != null) _pendingImageBar(),
-            if (_listening) _listeningBar(),
-            _composer(),
+            const Positioned.fill(child: ReadabilityScrim()),
+            Column(
+              children: [
+                if (_error != null) _errorBar(),
+                Expanded(
+                  child: _messages.isEmpty ? _emptyState() : _messageList(),
+                ),
+                if (_pendingImage != null) _pendingImageBar(),
+                if (_listening) _listeningBar(),
+                _composer(),
+              ],
+            ),
           ],
         ),
       ),
