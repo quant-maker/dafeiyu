@@ -23,6 +23,7 @@ import 'ui/composer.dart';
 import 'ui/empty_state.dart';
 import 'ui/layout.dart';
 import 'ui/message_list.dart';
+import 'ui/overlays.dart';
 import 'ui/scrim.dart';
 import 'ui/surfaces.dart';
 import 'ui/theme.dart';
@@ -790,13 +791,13 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   void _imageSheet() {
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: const Color(0xFF141F33),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
               leading: const Icon(Icons.photo_camera_outlined),
               title: const Text('拍照'),
               onTap: () {
@@ -805,6 +806,8 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
               },
             ),
             ListTile(
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
               leading: const Icon(Icons.photo_library_outlined),
               title: const Text('从相册选'),
               onTap: () {
@@ -1846,14 +1849,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
 
   void _openImage(String b64) {
-    showDialog<void>(
-      context: context,
-      builder: (_) => Dialog(
-        backgroundColor: Colors.black,
-        insetPadding: const EdgeInsets.all(8),
-        child: InteractiveViewer(child: Image.memory(base64Decode(b64))),
-      ),
-    );
+    showImageViewer(context, base64Decode(b64));
   }
 
   Widget _pendingImageBar() {

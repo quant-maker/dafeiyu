@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../ui/layout.dart';
+import '../ui/overlays.dart';
 import '../ui/surfaces.dart';
 import '../ui/tokens.dart';
 import 'comfy.dart';
@@ -250,14 +251,7 @@ class _ComfyPageState extends State<ComfyPage> {
   }
 
   void _openFull(BuildContext context, Uint8List bytes) {
-    showDialog<void>(
-      context: context,
-      builder: (_) => Dialog(
-        backgroundColor: Colors.black,
-        insetPadding: const EdgeInsets.all(8),
-        child: InteractiveViewer(child: Image.memory(bytes)),
-      ),
-    );
+    showImageViewer(context, bytes);
   }
 
   Widget _statusCard() {
