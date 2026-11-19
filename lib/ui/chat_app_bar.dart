@@ -34,6 +34,8 @@ class ChatAppBar extends StatelessWidget implements PreferredSizeWidget {
   final VoidCallback onNewChat;
   final VoidCallback onSettings;
 
+  // 68 is the **content** height. Scaffold's `primary: true` path adds the
+  // status-bar inset on top, so this widget must stay `primary`.
   @override
   Size get preferredSize => const Size.fromHeight(height);
 

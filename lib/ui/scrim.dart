@@ -9,10 +9,7 @@ import 'tokens.dart';
 /// reading surface keeps a predictable contrast without depending on the
 /// photo behind it.
 class ReadabilityScrim extends StatelessWidget {
-  const ReadabilityScrim({super.key, this.strength = 1});
-
-  /// Reserved multiplier kept for callers; the rendered geometry is fixed.
-  final double strength;
+  const ReadabilityScrim({super.key});
 
   @override
   Widget build(BuildContext context) {

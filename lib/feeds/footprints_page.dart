@@ -53,11 +53,27 @@ class _FootprintsPageState extends State<FootprintsPage> {
         scrolledUnderElevation: 0,
         title: const Text('她的足迹'),
         actions: [
-          GhostIconButton(
-            icon: Icons.auto_awesome_outlined,
-            tooltip: '补记一个瞬间',
-            onPressed: _working ? null : _add,
-          ),
+          if (_working)
+            const Tooltip(
+              message: '补记一个瞬间',
+              child: SizedBox(
+                width: 44,
+                height: 44,
+                child: Center(
+                  child: SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              ),
+            )
+          else
+            GhostIconButton(
+              icon: Icons.auto_awesome_outlined,
+              tooltip: '补记一个瞬间',
+              onPressed: _add,
+            ),
         ],
       ),
       body: _items.isEmpty

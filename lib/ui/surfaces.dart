@@ -289,13 +289,16 @@ class _PulsingDotState extends State<_PulsingDot>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
   late final Animation<double> _opacity;
+  bool _started = false;
 
   @override
-  void initState() {
-    super.initState();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
     _controller = AnimationController(
       vsync: this,
-      duration: AppDurations.breathe,
+      duration: AppTokens.of(context).durations.breathe,
     )..repeat(reverse: true);
     _opacity = Tween<double>(begin: 1, end: .55).animate(
       CurvedAnimation(parent: _controller, curve: Curves.easeInOut),

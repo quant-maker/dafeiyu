@@ -441,7 +441,7 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin {
+class _ChatPageState extends State<ChatPage> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
   List<Message> _messages = [];
@@ -514,6 +514,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     });
     ChatStore.load().then((history) {
       if (_preview) {
+        if (!mounted) return;
         setState(() => _messages = List.of(kPreviewMessages));
         _scrollToEnd(animate: false);
         return;
@@ -591,6 +592,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     }
     try {
       if (!await _recorder.hasPermission()) {
+        if (!mounted) return;
         setState(() => _error = '没有麦克风权限');
         return;
       }
@@ -606,6 +608,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
             )
           : const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 64000);
       await _recorder.start(config, path: path);
+      if (!mounted) return;
       setState(() {
         _recording = true;
         _listening = true;
@@ -614,6 +617,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         _error = null;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _recording = false;
         _listening = false;
@@ -734,6 +738,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       path = await _recorder.stop();
     } catch (_) {}
     path ??= _recordPath;
+    if (!mounted) return;
     if (path == null || s == null) {
       setState(() {
         _listening = false;
@@ -777,6 +782,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         await _handleAsrUnavailable();
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _listening = false;
         _voiceHint = '';
@@ -1831,30 +1837,33 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
             ),
             Positioned(
               right: 12,
-              bottom: 8,
-              child: IgnorePointer(
-                ignoring: !_showJump,
-                child: AnimatedOpacity(
-                  opacity: _showJump ? 1 : 0,
-                  duration: AppDurations.base,
-                  child: SizedBox(
-                    width: 40,
-                    height: 40,
-                    child: Material(
-                      color: AppPalette.surfaceHi,
-                      shape: const CircleBorder(),
-                      child: IconButton(
-                        tooltip: '回到底部',
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints.tightFor(
-                          width: 40,
-                          height: 40,
-                        ),
-                        onPressed: _scrollToEnd,
-                        icon: const Icon(
-                          Icons.arrow_downward,
-                          size: 18,
-                          color: AppPalette.text1,
+              bottom: 72,
+              child: ExcludeSemantics(
+                excluding: !_showJump,
+                child: IgnorePointer(
+                  ignoring: !_showJump,
+                  child: AnimatedOpacity(
+                    opacity: _showJump ? 1 : 0,
+                    duration: AppDurations.base,
+                    child: SizedBox(
+                      width: 40,
+                      height: 40,
+                      child: Material(
+                        color: AppPalette.surfaceHi,
+                        shape: const CircleBorder(),
+                        child: IconButton(
+                          tooltip: '回到底部',
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints.tightFor(
+                            width: 40,
+                            height: 40,
+                          ),
+                          onPressed: _scrollToEnd,
+                          icon: const Icon(
+                            Icons.arrow_downward,
+                            size: 18,
+                            color: AppPalette.text1,
+                          ),
                         ),
                       ),
                     ),
@@ -2113,6 +2122,7 @@ class _SettingsPageState extends State<SettingsPage> {
       final raw = _base.text.trim();
       final base = raw.endsWith('/') ? raw.substring(0, raw.length - 1) : raw;
       final res = await http.get(Uri.parse('$base/models'), headers: {'authorization': 'Bearer ${_key.text.trim()}'});
+      if (!mounted) return;
       if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
       final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
       final ids = (j['data'] as List).map((e) => (e as Map)['id'].toString()).toList()..sort();
@@ -2121,6 +2131,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _loadingModels = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _loadingModels = false;
         _modelError = '$e';
@@ -2697,9 +2708,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 child: TextButton.icon(
                   onPressed: () => setState(() {
                     _comfyWorkflow.text = kComfySdTurboWorkflow;
-                    if (_comfyUrl.text.trim().isEmpty || _comfyUrl.text.contains('192.168.1.10')) {
-                      // convenient for local testing
-                    }
                   }),
                   icon: const Icon(Icons.auto_fix_high, size: 16),
                   label: const Text('填入示例（SD-Turbo）', style: TextStyle(fontSize: 12)),

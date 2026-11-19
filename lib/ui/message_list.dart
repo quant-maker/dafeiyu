@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -76,13 +77,11 @@ class MessageList extends StatelessWidget {
         final String? b64 = m.imageBase64;
         final Widget? image = b64 == null
             ? null
-            : GestureDetector(
+            : _MessageImage(
+                key: ObjectKey(m),
+                base64: b64,
+                width: mine ? 170 : 260,
                 onTap: () => onOpenImage(b64),
-                child: Image.memory(
-                  base64Decode(b64),
-                  width: mine ? 170 : 260,
-                  fit: BoxFit.contain,
-                ),
               );
         final bool isLast = i == messages.length - 1;
         final bool showCaret =
@@ -136,6 +135,45 @@ class MessageList extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+}
+
+/// Decodes its base64 image exactly once, then reuses the bytes on rebuild.
+class _MessageImage extends StatefulWidget {
+  const _MessageImage({
+    super.key,
+    required this.base64,
+    required this.width,
+    required this.onTap,
+  });
+
+  final String base64;
+  final double width;
+  final VoidCallback onTap;
+
+  @override
+  State<_MessageImage> createState() => _MessageImageState();
+}
+
+class _MessageImageState extends State<_MessageImage> {
+  late final Uint8List _bytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _bytes = base64Decode(widget.base64);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: widget.onTap,
+      child: Image.memory(
+        _bytes,
+        width: widget.width,
+        fit: BoxFit.contain,
+      ),
     );
   }
 }
