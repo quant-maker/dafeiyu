@@ -19,6 +19,7 @@ import 'providers.dart';
 import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'ui/chat_app_bar.dart';
+import 'ui/empty_state.dart';
 import 'ui/layout.dart';
 import 'ui/message_list.dart';
 import 'ui/scrim.dart';
@@ -1794,56 +1795,10 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
 
   Widget _emptyState() {
-    const samples = ['今天有什么好玩的', '帮我看看这张图', '你还记得我吗'];
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(28, 0, 28, 40),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 96,
-              height: 96,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: const LinearGradient(colors: [Color(0xFF7CC4FF), Color(0xFF2F6FD0)]),
-                boxShadow: [
-                  BoxShadow(color: const Color(0xFF4AA3FF).withValues(alpha: .3), blurRadius: 34, spreadRadius: 2)
-                ],
-              ),
-              child: const Center(child: Text('🐟', style: TextStyle(fontSize: 44))),
-            ),
-            const SizedBox(height: 20),
-            const Text('今天想聊点什么？', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            Text(
-              '可以按麦克风说话，也可以发一张图给它看。  ·  $kBuildTag',
-              style: TextStyle(fontSize: 12.5, color: Colors.white.withValues(alpha: .45)),
-            ),
-            const SizedBox(height: 26),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              alignment: WrapAlignment.center,
-              children: samples
-                  .map((t) => InkWell(
-                        onTap: () => _send(t),
-                        borderRadius: BorderRadius.circular(999),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: .06),
-                            borderRadius: BorderRadius.circular(999),
-                            border: Border.all(color: Colors.white.withValues(alpha: .1)),
-                          ),
-                          child: Text(t, style: const TextStyle(fontSize: 12.5)),
-                        ),
-                      ))
-                  .toList(),
-            ),
-          ],
-        ),
-      ),
+    return EmptyState(
+      samples: const ['今天有什么好玩的', '帮我看看这张图', '你还记得我吗'],
+      onSample: _send,
+      buildTag: kBuildTag,
     );
   }
 
