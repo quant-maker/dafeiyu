@@ -23,6 +23,7 @@ import 'ui/empty_state.dart';
 import 'ui/layout.dart';
 import 'ui/message_list.dart';
 import 'ui/scrim.dart';
+import 'ui/surfaces.dart';
 import 'ui/theme.dart';
 import 'scene/scene_stage.dart';
 import 'voice/local_asr_web.dart' if (dart.library.io) 'voice/local_asr_io.dart';
@@ -1771,25 +1772,12 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
 
   Widget _errorBar() {
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: const Color(0xFF3B1D22),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF7A2A35)),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.error_outline, size: 16, color: Color(0xFFFF8A8A)),
-          const SizedBox(width: 8),
-          Expanded(child: SelectableText(_error!, style: const TextStyle(color: Color(0xFFFFC2C2), fontSize: 12))),
-          InkWell(
-            onTap: () => setState(() => _error = null),
-            child: const Icon(Icons.close, size: 16, color: Color(0xFFFFC2C2)),
-          ),
-        ],
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      child: InlineNotice(
+        tone: NoticeTone.danger,
+        message: _error!,
+        onDismiss: () => setState(() => _error = null),
       ),
     );
   }
