@@ -2604,13 +2604,15 @@ class _SettingsPageState extends State<SettingsPage> {
             key: const ValueKey('settings-section-comfy'),
             title: 'ComfyUI',
             children: <Widget>[
-              const _Label('ComfyUI（电脑上的画图服务）'),
-              TextField(
-                controller: _comfyUrl,
-                decoration: const InputDecoration(
-                  hintText: 'http://192.168.1.10:8188',
-                  isDense: true,
-                  helperText: '手机和电脑要在同一个局域网；ComfyUI 需以 --listen 0.0.0.0 启动',
+              SettingsRow(
+                label: 'ComfyUI（电脑上的画图服务）',
+                child: TextField(
+                  controller: _comfyUrl,
+                  decoration: const InputDecoration(
+                    hintText: 'http://192.168.1.10:8188',
+                    isDense: true,
+                    helperText: '手机和电脑要在同一个局域网；ComfyUI 需以 --listen 0.0.0.0 启动',
+                  ),
                 ),
               ),
               Align(
@@ -2624,21 +2626,25 @@ class _SettingsPageState extends State<SettingsPage> {
               if (_comfyStatus.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 6),
-                  child: Text(
-                    _comfyStatus,
-                    style: const TextStyle(fontSize: 11.5, color: Color(0xFF9FD0FF)),
+                  child: InlineNotice(
+                    tone: _comfyTesting
+                        ? NoticeTone.info
+                        : (_comfyStatus.contains('连不上') ? NoticeTone.danger : NoticeTone.success),
+                    message: _comfyStatus,
                   ),
                 ),
               const SizedBox(height: 14),
-              const _Label('文生图工作流（她调用 draw 时用）'),
-              TextField(
-                controller: _comfyWorkflow,
-                minLines: 2,
-                maxLines: 6,
-                decoration: const InputDecoration(
-                  hintText: '「Save (API Format)」导出的 JSON',
-                  isDense: true,
-                  helperText: '提示词会自动写进采样器的正向/负向输入',
+              SettingsRow(
+                label: '文生图工作流（她调用 draw 时用）',
+                child: TextField(
+                  controller: _comfyWorkflow,
+                  minLines: 2,
+                  maxLines: 6,
+                  decoration: const InputDecoration(
+                    hintText: '「Save (API Format)」导出的 JSON',
+                    isDense: true,
+                    helperText: '提示词会自动写进采样器的正向/负向输入',
+                  ),
                 ),
               ),
               Align(
@@ -2655,27 +2661,31 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
               const SizedBox(height: 14),
-              const _Label('去背景工作流（调用 remove_bg 时用）'),
-              TextField(
-                controller: _comfyRemoveBg,
-                minLines: 2,
-                maxLines: 6,
-                decoration: const InputDecoration(
-                  hintText: '需要一个 LoadImage + 抠图节点 + SaveImage 的工作流',
-                  isDense: true,
-                  helperText: '例：ComfyUI-rembg / BRIA RMBG / INSPYRENET 等自定义节点',
+              SettingsRow(
+                label: '去背景工作流（调用 remove_bg 时用）',
+                child: TextField(
+                  controller: _comfyRemoveBg,
+                  minLines: 2,
+                  maxLines: 6,
+                  decoration: const InputDecoration(
+                    hintText: '需要一个 LoadImage + 抠图节点 + SaveImage 的工作流',
+                    isDense: true,
+                    helperText: '例：ComfyUI-rembg / BRIA RMBG / INSPYRENET 等自定义节点',
+                  ),
                 ),
               ),
               const SizedBox(height: 14),
-              const _Label('图片编辑工作流（调用 edit_image 时用）'),
-              TextField(
-                controller: _comfyEdit,
-                minLines: 2,
-                maxLines: 6,
-                decoration: const InputDecoration(
-                  hintText: 'LoadImage → 编辑节点（img2img / inpaint / Kontext / Qwen-Edit）→ SaveImage',
-                  isDense: true,
-                  helperText: '对话里最近一张图会被自动上传并注入 LoadImage',
+              SettingsRow(
+                label: '图片编辑工作流（调用 edit_image 时用）',
+                child: TextField(
+                  controller: _comfyEdit,
+                  minLines: 2,
+                  maxLines: 6,
+                  decoration: const InputDecoration(
+                    hintText: 'LoadImage → 编辑节点（img2img / inpaint / Kontext / Qwen-Edit）→ SaveImage',
+                    isDense: true,
+                    helperText: '对话里最近一张图会被自动上传并注入 LoadImage',
+                  ),
                 ),
               ),
               Align(
@@ -2766,14 +2776,3 @@ class _SettingsSwitch extends StatelessWidget {
   }
 }
 
-class _Label extends StatelessWidget {
-  final String text;
-  const _Label(this.text);
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Text(text, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-    );
-  }
-}
