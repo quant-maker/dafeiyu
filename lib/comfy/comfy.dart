@@ -38,6 +38,20 @@ class ComfyClient {
     }
   }
 
+  /// True when every one of these node types is installed.
+  Future<bool> hasNodes(List<String> types) async {
+    try {
+      final res = await http
+          .get(Uri.parse('$_base/object_info'))
+          .timeout(const Duration(seconds: 20));
+      if (res.statusCode != 200) return false;
+      final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      return types.every(j.containsKey);
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Checkpoints this ComfyUI can load. Empty means nothing is installed.
   Future<List<String>> checkpoints() async {
     try {
@@ -139,6 +153,26 @@ class ComfyClient {
         final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
         final entry = j[promptId] as Map<String, dynamic>?;
         if (entry == null) continue;
+
+        // A failed graph never produces outputs; report the real reason.
+        final status = entry['status'] as Map<String, dynamic>?;
+        if (status != null && status['status_str'] == 'error') {
+          var detail = 'ComfyUI 执行失败';
+          final messages = status['messages'] as List?;
+          if (messages != null) {
+            for (final m in messages) {
+              if (m is List && m.length > 1 && m.first == 'execution_error') {
+                final info = m[1] as Map?;
+                final msg = info?['exception_message']?.toString();
+                final node = info?['node_type']?.toString();
+                if (msg != null) {
+                  detail = node == null ? msg : '$node: $msg';
+                }
+              }
+            }
+          }
+          throw Exception(detail.trim());
+        }
         final outputs = entry['outputs'] as Map<String, dynamic>? ?? const {};
         final files = <String>[];
         for (final node in outputs.values) {
@@ -290,6 +324,38 @@ Map<String, dynamic> defaultImg2Img(
     '9': {
       'class_type': 'SaveImage',
       'inputs': {'images': ['8', 0], 'filename_prefix': 'feiyu_edit'},
+    },
+  };
+}
+
+/// Background removal: downscale (CPU runs it much faster), cut out, keep alpha.
+Map<String, dynamic> defaultRemoveBg({int size = 512, String model = 'BiRefNet_512x512'}) {
+  return {
+    '1': {
+      'class_type': 'LoadImage',
+      'inputs': {'image': ''},
+    },
+    '2': {
+      'class_type': 'ImageScale',
+      'inputs': {
+        'upscale_method': 'lanczos',
+        'width': size,
+        'height': size,
+        'crop': 'center',
+        'image': ['1', 0],
+      },
+    },
+    '3': {
+      'class_type': 'BiRefNetRMBG',
+      'inputs': {'image': ['2', 0], 'model': model},
+    },
+    '4': {
+      'class_type': 'JoinImageWithAlpha',
+      'inputs': {'image': ['3', 0], 'alpha': ['3', 1]},
+    },
+    '5': {
+      'class_type': 'SaveImage',
+      'inputs': {'images': ['4', 0], 'filename_prefix': 'feiyu_cut'},
     },
   };
 }

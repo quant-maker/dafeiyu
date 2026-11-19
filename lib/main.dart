@@ -1216,17 +1216,24 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
         }
       } else {
         if (name == 'remove_bg') {
-          return '去背景要用专门的抠图节点（ComfyUI-RMBG、BRIA RMBG 之类），'
-              '你的 ComfyUI 里还没装，所以这项暂时用不了。装好之后把工作流粘进设置即可。';
+          // ComfyUI-RMBG installed => we can build the graph ourselves.
+          final nodes = await client.hasNodes(['BiRefNetRMBG', 'JoinImageWithAlpha']);
+          if (!nodes) {
+            return '去背景需要 ComfyUI-RMBG 节点（BiRefNetRMBG + JoinImageWithAlpha），'
+                '你的 ComfyUI 里没有装，所以这项暂时用不了。';
+          }
+          wf = defaultRemoveBg();
+          debugPrint('[feiyu] auto workflow: background removal');
+        } else {
+          final ckpts = await client.checkpoints();
+          if (ckpts.isEmpty) {
+            return '你的 ComfyUI 里一个模型都没有。先在 models/checkpoints 里放一个模型'
+                '（比如 SD-Turbo），我就能自己把工作流拼出来。';
+          }
+          final ckpt = ckpts.first;
+          wf = isDraw ? defaultTxt2Img(ckpt) : defaultImg2Img(ckpt);
+          debugPrint('[feiyu] auto workflow using $ckpt');
         }
-        final ckpts = await client.checkpoints();
-        if (ckpts.isEmpty) {
-          return '你的 ComfyUI 里一个模型都没有。先在 models/checkpoints 里放一个模型'
-              '（比如 SD-Turbo），我就能自己把工作流拼出来。';
-        }
-        final ckpt = ckpts.first;
-        wf = isDraw ? defaultTxt2Img(ckpt) : defaultImg2Img(ckpt);
-        debugPrint('[feiyu] auto workflow using $ckpt');
       }
 
       // Image-in workflows need the newest picture from the conversation.
