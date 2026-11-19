@@ -78,7 +78,7 @@ class MessageList extends StatelessWidget {
         final Widget? image = b64 == null
             ? null
             : _MessageImage(
-                key: ObjectKey(m),
+                key: ValueKey<String>(b64),
                 base64: b64,
                 width: mine ? 170 : 260,
                 onTap: () => onOpenImage(b64),
@@ -157,12 +157,20 @@ class _MessageImage extends StatefulWidget {
 }
 
 class _MessageImageState extends State<_MessageImage> {
-  late final Uint8List _bytes;
+  late Uint8List _bytes;
 
   @override
   void initState() {
     super.initState();
     _bytes = base64Decode(widget.base64);
+  }
+
+  @override
+  void didUpdateWidget(_MessageImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.base64 != oldWidget.base64) {
+      _bytes = base64Decode(widget.base64);
+    }
   }
 
   @override

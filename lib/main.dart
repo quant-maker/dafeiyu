@@ -1827,48 +1827,57 @@ class _ChatPageState extends State<ChatPage> {
                 children: [
                   if (_error != null) _errorBar(),
                   Expanded(
-                    child: _messages.isEmpty ? _emptyState() : _messageList(),
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: _messages.isEmpty
+                              ? _emptyState()
+                              : _messageList(),
+                        ),
+                        Positioned(
+                          right: 12,
+                          bottom: 8,
+                          child: ExcludeSemantics(
+                            excluding: !_showJump,
+                            child: IgnorePointer(
+                              ignoring: !_showJump,
+                              child: AnimatedOpacity(
+                                opacity: _showJump ? 1 : 0,
+                                duration: AppDurations.base,
+                                child: SizedBox(
+                                  width: 40,
+                                  height: 40,
+                                  child: Material(
+                                    color: AppPalette.surfaceHi,
+                                    shape: const CircleBorder(),
+                                    child: IconButton(
+                                      tooltip: '回到底部',
+                                      padding: EdgeInsets.zero,
+                                      constraints:
+                                          const BoxConstraints.tightFor(
+                                            width: 40,
+                                            height: 40,
+                                          ),
+                                      onPressed: _scrollToEnd,
+                                      icon: const Icon(
+                                        Icons.arrow_downward,
+                                        size: 18,
+                                        color: AppPalette.text1,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                   if (_pendingImage != null) _pendingImageBar(),
                   if (_listening) _listeningBar(),
                   _composer(),
                 ],
-              ),
-            ),
-            Positioned(
-              right: 12,
-              bottom: 72,
-              child: ExcludeSemantics(
-                excluding: !_showJump,
-                child: IgnorePointer(
-                  ignoring: !_showJump,
-                  child: AnimatedOpacity(
-                    opacity: _showJump ? 1 : 0,
-                    duration: AppDurations.base,
-                    child: SizedBox(
-                      width: 40,
-                      height: 40,
-                      child: Material(
-                        color: AppPalette.surfaceHi,
-                        shape: const CircleBorder(),
-                        child: IconButton(
-                          tooltip: '回到底部',
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints.tightFor(
-                            width: 40,
-                            height: 40,
-                          ),
-                          onPressed: _scrollToEnd,
-                          icon: const Icon(
-                            Icons.arrow_downward,
-                            size: 18,
-                            color: AppPalette.text1,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
               ),
             ),
           ],
