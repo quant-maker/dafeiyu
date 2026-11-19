@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../ui/avatar_mark.dart';
+import '../ui/layout.dart';
+import '../ui/surfaces.dart';
+import '../ui/tokens.dart';
 import 'footprints.dart';
 
 /// Her Moments: a scroll of the moments she chose to keep.
@@ -43,71 +47,70 @@ class _FootprintsPageState extends State<FootprintsPage> {
     }
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0B1220),
+      backgroundColor: AppPalette.ink,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF101A2C),
+        backgroundColor: Colors.transparent,
+        scrolledUnderElevation: 0,
         title: const Text('她的足迹'),
         actions: [
-          IconButton(
-            onPressed: _working ? null : _add,
+          GhostIconButton(
+            icon: Icons.auto_awesome_outlined,
             tooltip: '补记一个瞬间',
-            icon: _working
-                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.auto_awesome_outlined),
+            onPressed: _working ? null : _add,
           ),
         ],
       ),
       body: _items.isEmpty
-          ? Center(
-              child: Padding(
-                padding: const EdgeInsets.all(36),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('🐟', style: TextStyle(fontSize: 46)),
-                    const SizedBox(height: 16),
-                    Text(
-                      '还没有足迹。\n多聊几轮，她会自己挑一些瞬间留在这里。',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.white.withValues(alpha: .55), height: 1.6),
-                    ),
-                  ],
+          ? ContentFrame(
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(AppSpacing.xxxl),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const AvatarMark(size: 72),
+                      const SizedBox(height: AppSpacing.l),
+                      Text(
+                        '还没有足迹。\n多聊几轮，她会自己挑一些瞬间留在这里。',
+                        textAlign: TextAlign.center,
+                        style: AppType.bodySmall.copyWith(
+                          color: AppPalette.text3,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             )
-          : ListView(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
-              children: [
-                for (final entry in groups.entries) ...[
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(4, 18, 4, 10),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: .08),
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: Text(
+          : ContentFrame(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(0, 8, 0, 40),
+                children: [
+                  for (final entry in groups.entries) ...[
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(0, 18, 0, 10),
+                      child: Row(
+                        children: [
+                          Text(
                             entry.key,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.white.withValues(alpha: .7),
-                              letterSpacing: .5,
+                            style: AppType.label.copyWith(
+                              color: AppPalette.text3,
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Divider(color: Colors.white.withValues(alpha: .08), height: 1),
-                        ),
-                      ],
+                          const SizedBox(width: AppSpacing.m),
+                          const Expanded(
+                            child: Divider(
+                              color: AppPalette.line,
+                              height: 1,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  for (final f in entry.value) _card(f),
+                    for (final f in entry.value) _card(f),
+                  ],
                 ],
-              ],
+              ),
             ),
     );
   }
@@ -115,48 +118,46 @@ class _FootprintsPageState extends State<FootprintsPage> {
   Widget _card(Footprint f) {
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(AppSpacing.l),
       decoration: BoxDecoration(
-        color: const Color(0xFF16223A).withValues(alpha: .92),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withValues(alpha: .07)),
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: .3), blurRadius: 14, offset: const Offset(0, 4))],
+        color: AppPalette.surfaceAlt,
+        borderRadius: BorderRadius.circular(AppRadii.xl),
+        border: Border.all(color: AppPalette.line),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Container(
-                width: 30,
-                height: 30,
-                decoration: const BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: LinearGradient(colors: [Color(0xFF7CC4FF), Color(0xFF2F6FD0)]),
-                ),
-                child: const Center(child: Text('🐟', style: TextStyle(fontSize: 15))),
-              ),
-              const SizedBox(width: 10),
+              const AvatarMark(size: 28),
+              const SizedBox(width: AppSpacing.m),
               Expanded(
                 child: Text(
                   f.title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.white),
+                  style: AppType.subtitle.copyWith(color: AppPalette.text1),
                 ),
               ),
-              Text(f.timeLabel, style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: .35))),
+              Text(
+                f.timeLabel,
+                style: AppType.caption.copyWith(color: AppPalette.text3),
+              ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: AppSpacing.m),
           Text(
             f.body,
-            style: TextStyle(fontSize: 13.5, height: 1.65, color: Colors.white.withValues(alpha: .82)),
+            style: AppType.bodySmall.copyWith(
+              fontSize: 14,
+              height: 1.7,
+              color: AppPalette.text2,
+            ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: AppSpacing.s),
           Align(
             alignment: Alignment.centerRight,
-            child: Text(f.mood, style: const TextStyle(fontSize: 15)),
+            child: Pill(label: f.mood),
           ),
         ],
       ),
