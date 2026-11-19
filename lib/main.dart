@@ -2703,34 +2703,22 @@ class _SettingsPageState extends State<SettingsPage> {
             key: const ValueKey('settings-section-about'),
             title: '关于',
             children: <Widget>[
-              Container(
-                margin: const EdgeInsets.only(bottom: 16),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF12203A),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.white.withValues(alpha: .08)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('自检', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 6),
-                    SelectableText(
-                      'build=$kBuildTag\n'
-                      'baseUrl=${_base.text}\n'
-                      'model=${_model.text}\n'
-                      'key长度=${widget.initial.apiKey.length}（注入源长度 ${kKeyInjected ? kInjectedKey.length : 0}）',
-                      style: const TextStyle(fontSize: 11, height: 1.5, color: Color(0xFF9FB6D6)),
-                    ),
-                  ],
-                ),
+              Pill(label: 'build $kBuildTag'),
+              const SizedBox(height: 14),
+              SelectableText(
+                'build=$kBuildTag\n'
+                'baseUrl=${_base.text}\n'
+                'model=${_model.text}\n'
+                'key长度=${widget.initial.apiKey.length}（注入源长度 ${kKeyInjected ? kInjectedKey.length : 0}）',
+                style: AppType.mono.copyWith(color: AppPalette.text3),
               ),
               const SizedBox(height: 14),
-              const Text(
+              Text(
                 '所有数据只存在这台设备上：Key、对话、记忆都不经过任何第三方服务器。',
-                style: TextStyle(fontSize: 12, color: Colors.grey),
+                style: AppType.caption.copyWith(color: AppPalette.text3),
               ),
+              const SizedBox(height: 8),
+              Text('0.8.0+8', style: AppType.caption.copyWith(color: AppPalette.text3)),
             ],
           ),
         ],
