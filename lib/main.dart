@@ -2117,484 +2117,541 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: AppPalette.ink,
       appBar: AppBar(
         title: const Text('设置'),
-        actions: [TextButton(onPressed: _save, child: const Text('保存'))],
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: FilledButton(onPressed: _save, child: const Text('保存')),
+          ),
+        ],
       ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
         children: [
-          Container(
-            margin: const EdgeInsets.only(bottom: 16),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF12203A),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white.withValues(alpha: .08)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('自检', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 6),
-                SelectableText(
-                  'build=$kBuildTag\n'
-                  'baseUrl=${_base.text}\n'
-                  'model=${_model.text}\n'
-                  'key长度=${widget.initial.apiKey.length}（注入源长度 ${kKeyInjected ? kInjectedKey.length : 0}）',
-                  style: const TextStyle(fontSize: 11, height: 1.5, color: Color(0xFF9FB6D6)),
-                ),
-              ],
-            ),
-          ),
-          const _Label('厂商'),
-          DropdownButtonFormField<String>(
-            initialValue: _provider,
-            isExpanded: true,
-            items: kProviders
-                .map((p) => DropdownMenuItem(
-                      value: p.id,
-                      child: Text('${p.name}${p.note.isEmpty ? '' : '  ·  ${p.note}'}',
-                          overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
-                    ))
-                .toList(),
-            onChanged: (id) {
-              if (id == null) return;
-              final preset = providerById(id);
-              setState(() {
-                _keys[_provider] = _key.text.trim();
-                _provider = id;
-                if (preset.baseUrl.isNotEmpty) _base.text = preset.baseUrl;
-                if (preset.models.isNotEmpty) _model.text = preset.models.first;
-                _key.text = _keys[id] ?? '';
-                _models = const [];
-              });
-              if (_key.text.trim().isNotEmpty) _loadModels();
-            },
-          ),
-          const SizedBox(height: 16),
-          const _Label('Base URL（OpenAI 兼容，不带 /chat/completions）'),
-          TextField(controller: _base, decoration: const InputDecoration(hintText: 'https://…/v1')),
-          const SizedBox(height: 16),
-          const _Label('API Key'),
-          TextField(
-            controller: _key,
-            obscureText: true,
-            onSubmitted: (_) => _loadModels(),
-            onEditingComplete: () {
-              if (_key.text.trim().isNotEmpty && _models.isEmpty) _loadModels();
-            },
-            decoration: InputDecoration(
-              hintText: 'sk-…',
-              suffixIcon: IconButton(
-                onPressed: _loadModels,
-                icon: _loadingModels
-                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.refresh, size: 18),
-                tooltip: '刷新模型列表',
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          const _Label('模型'),
-          if (_modelError != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Text('拉取模型失败：$_modelError', style: const TextStyle(fontSize: 11, color: Color(0xFFFF9A9A))),
-            ),
-          Builder(builder: (context) {
-            final preset = providerById(_provider);
-            final options = _models.isNotEmpty ? _models : preset.models;
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                DropdownButtonFormField<String>(
-                  initialValue: options.contains(_model.text) ? _model.text : null,
-                  isExpanded: true,
-                  decoration: InputDecoration(
-                    hintText: _models.isEmpty ? '先填 Key（会自动拉取）' : '选择模型',
-                    suffixIcon: _loadingModels
-                        ? const Padding(
-                            padding: EdgeInsets.all(12),
-                            child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-                          )
-                        : null,
-                  ),
-                  items: options
-                      .map((id) => DropdownMenuItem(
-                            value: id,
-                            child: Text(id, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
-                          ))
-                      .toList(),
-                  onChanged: (v) {
-                    if (v != null) setState(() => _model.text = v);
-                  },
-                ),
-                if (_models.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6, left: 4),
-                    child: Text('已从该厂商拉取 ${_models.length} 个模型',
-                        style: const TextStyle(fontSize: 11, color: Color(0xFF7FD39A))),
-                  ),
-              ],
-            );
-          }),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _model,
-            decoration: const InputDecoration(hintText: '也可以手填模型名', isDense: true),
-            onChanged: (_) => setState(() {}),
-          ),
-          const SizedBox(height: 20),
-          const _Label('人设（system prompt）'),
-          TextField(controller: _persona, minLines: 5, maxLines: 12),
-          const SizedBox(height: 8),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            value: _memoryEnabled,
-            onChanged: (v) => setState(() => _memoryEnabled = v),
-            title: const Text('自动记忆'),
-            subtitle: const Text('每几轮抽取关于你的长期事实，存在本机'),
-          ),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            value: _ttsEnabled,
-            onChanged: (v) => setState(() => _ttsEnabled = v),
-            title: const Text('语音朗读'),
-            subtitle: const Text('回答完念出来（前三句左右）'),
-          ),
-          if (_ttsEnabled) ...[
-            DropdownButtonFormField<String>(
-              initialValue: _ttsEngine,
-              isExpanded: true,
-              decoration: const InputDecoration(labelText: '发音引擎', isDense: true),
-              items: const [
-                DropdownMenuItem(value: 'system', child: Text('系统语音（免费、机械）', style: TextStyle(fontSize: 13))),
-                DropdownMenuItem(value: 'local', child: Text('本机 Kokoro（自然、离线）', style: TextStyle(fontSize: 13))),
-              ],
-              onChanged: (v) => setState(() => _ttsEngine = v ?? 'system'),
-            ),
-            if (_ttsEngine == 'local') ...[
-              const SizedBox(height: 8),
-              DropdownButtonFormField<int>(
-                initialValue: _ttsSid,
+          SectionCard(
+            key: const ValueKey('settings-section-model'),
+            title: '模型',
+            children: <Widget>[
+              const _Label('厂商'),
+              DropdownButtonFormField<String>(
+                initialValue: _provider,
                 isExpanded: true,
-                decoration: const InputDecoration(labelText: '音色', isDense: true),
-                items: LocalTtsImpl.voices.entries
-                    .map((e) => DropdownMenuItem(
-                          value: e.key,
-                          child: Text(e.value, style: const TextStyle(fontSize: 13)),
+                items: kProviders
+                    .map((p) => DropdownMenuItem(
+                          value: p.id,
+                          child: Text('${p.name}${p.note.isEmpty ? '' : '  ·  ${p.note}'}',
+                              overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
                         ))
                     .toList(),
-                onChanged: (v) => setState(() => _ttsSid = v ?? 47),
+                onChanged: (id) {
+                  if (id == null) return;
+                  final preset = providerById(id);
+                  setState(() {
+                    _keys[_provider] = _key.text.trim();
+                    _provider = id;
+                    if (preset.baseUrl.isNotEmpty) _base.text = preset.baseUrl;
+                    if (preset.models.isNotEmpty) _model.text = preset.models.first;
+                    _key.text = _keys[id] ?? '';
+                    _models = const [];
+                  });
+                  if (_key.text.trim().isNotEmpty) _loadModels();
+                },
               ),
+              const SizedBox(height: 14),
+              const _Label('Base URL（OpenAI 兼容，不带 /chat/completions）'),
+              TextField(controller: _base, decoration: const InputDecoration(hintText: 'https://…/v1')),
+              const SizedBox(height: 14),
+              const _Label('API Key'),
+              TextField(
+                controller: _key,
+                obscureText: true,
+                onSubmitted: (_) => _loadModels(),
+                onEditingComplete: () {
+                  if (_key.text.trim().isNotEmpty && _models.isEmpty) _loadModels();
+                },
+                decoration: InputDecoration(
+                  hintText: 'sk-…',
+                  suffixIcon: IconButton(
+                    onPressed: _loadModels,
+                    icon: _loadingModels
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.refresh, size: 18),
+                    tooltip: '刷新模型列表',
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              if (_modelError != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text('拉取模型失败：$_modelError', style: const TextStyle(fontSize: 11, color: Color(0xFFFF9A9A))),
+                ),
+              Builder(builder: (context) {
+                final preset = providerById(_provider);
+                final options = _models.isNotEmpty ? _models : preset.models;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    DropdownButtonFormField<String>(
+                      initialValue: options.contains(_model.text) ? _model.text : null,
+                      isExpanded: true,
+                      decoration: InputDecoration(
+                        hintText: _models.isEmpty ? '先填 Key（会自动拉取）' : '选择模型',
+                        suffixIcon: _loadingModels
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                              )
+                            : null,
+                      ),
+                      items: options
+                          .map((id) => DropdownMenuItem(
+                                value: id,
+                                child: Text(id, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+                              ))
+                          .toList(),
+                      onChanged: (v) {
+                        if (v != null) setState(() => _model.text = v);
+                      },
+                    ),
+                    if (_models.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6, left: 4),
+                        child: Text('已从该厂商拉取 ${_models.length} 个模型',
+                            style: const TextStyle(fontSize: 11, color: Color(0xFF7FD39A))),
+                      ),
+                  ],
+                );
+              }),
+              const SizedBox(height: 14),
+              TextField(
+                controller: _model,
+                decoration: const InputDecoration(hintText: '也可以手填模型名', isDense: true),
+                onChanged: (_) => setState(() {}),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          SectionCard(
+            key: const ValueKey('settings-section-persona'),
+            title: '人设',
+            children: <Widget>[
+              const _Label('人设（system prompt）'),
+              TextField(controller: _persona, minLines: 5, maxLines: 12),
+            ],
+          ),
+          const SizedBox(height: 16),
+          SectionCard(
+            key: const ValueKey('settings-section-voice'),
+            title: '语音',
+            children: <Widget>[
+              const SectionHeader(label: '语音朗读'),
+              const SizedBox(height: 14),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _ttsEnabled,
+                onChanged: (v) => setState(() => _ttsEnabled = v),
+                title: const Text('语音朗读'),
+                subtitle: const Text('回答完念出来（前三句左右）'),
+              ),
+              if (_ttsEnabled) ...[
+                DropdownButtonFormField<String>(
+                  initialValue: _ttsEngine,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: '发音引擎', isDense: true),
+                  items: const [
+                    DropdownMenuItem(value: 'system', child: Text('系统语音（免费、机械）', style: TextStyle(fontSize: 13))),
+                    DropdownMenuItem(value: 'local', child: Text('本机 Kokoro（自然、离线）', style: TextStyle(fontSize: 13))),
+                  ],
+                  onChanged: (v) => setState(() => _ttsEngine = v ?? 'system'),
+                ),
+                if (_ttsEngine == 'local') ...[
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<int>(
+                    initialValue: _ttsSid,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: '音色', isDense: true),
+                    items: LocalTtsImpl.voices.entries
+                        .map((e) => DropdownMenuItem(
+                              value: e.key,
+                              child: Text(e.value, style: const TextStyle(fontSize: 13)),
+                            ))
+                        .toList(),
+                    onChanged: (v) => setState(() => _ttsSid = v ?? 47),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: Row(
+                      children: [
+                        const Text('语速：', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                        Expanded(
+                          child: Slider(
+                            value: _ttsSpeed,
+                            min: 0.6,
+                            max: 1.5,
+                            divisions: 18,
+                            label: _ttsSpeed.toStringAsFixed(2),
+                            onChanged: (v) => setState(() => _ttsSpeed = v),
+                          ),
+                        ),
+                        Text(_ttsSpeed.toStringAsFixed(2), style: const TextStyle(fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: _downloadingTts ? null : _downloadTts,
+                      icon: const Icon(Icons.download_outlined, size: 18),
+                      label: Text(_ttsModelReady ? '模型已就绪（点击重新下载）' : '下载语音模型（约 147 MB）'),
+                    ),
+                  ),
+                ],
+              ],
+              const SizedBox(height: 14),
+              const SectionHeader(label: '语音识别'),
+              const SizedBox(height: 14),
+              const _Label('语音识别服务（录音后上传这里转文字，不用手机自带识别）'),
+              DropdownButtonFormField<String>(
+                initialValue: _asrPreset,
+                isExpanded: true,
+                items: kAsrPresets
+                    .map((p) => DropdownMenuItem(
+                          value: p.id,
+                          child: Text(p.name, style: const TextStyle(fontSize: 13)),
+                        ))
+                    .toList(),
+                onChanged: (id) {
+                  if (id == null) return;
+                  final p = asrById(id);
+                  setState(() {
+                    _asrPreset = id;
+                    if (p.baseUrl.isNotEmpty) _asrBase.text = p.baseUrl;
+                    if (p.models.isNotEmpty) _asr.text = p.models.first;
+                  });
+                },
+              ),
+              if (_asrPreset == 'local') ...[
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  initialValue: _asrLocalModel,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: '离线模型', isDense: true),
+                  items: LocalAsrImpl.models.entries
+                      .map((e) => DropdownMenuItem(
+                            value: e.key,
+                            child: Text(e.value, style: const TextStyle(fontSize: 13)),
+                          ))
+                      .toList(),
+                  onChanged: (v) => setState(() => _asrLocalModel = v ?? 'dolphin'),
+                ),
+              ],
+              if (_asrPreset != 'same' && _asrPreset != 'local') ...[
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _asrBase,
+                  decoration: const InputDecoration(hintText: 'Base URL，例如 https://api.siliconflow.cn/v1', isDense: true),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _asrKey,
+                  obscureText: true,
+                  decoration: const InputDecoration(hintText: '语音服务 API Key', isDense: true),
+                ),
+              ],
+              const SizedBox(height: 8),
+              TextField(
+                controller: _asr,
+                decoration: const InputDecoration(hintText: '转写模型，例如 FunAudioLLM/SenseVoiceSmall', isDense: true),
+              ),
+              const SizedBox(height: 14),
+              const SectionHeader(label: '看图模型'),
+              const SizedBox(height: 14),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _visionEnabled,
+                onChanged: (v) => setState(() => _visionEnabled = v),
+                title: const Text('发图时切到看图模型'),
+                subtitle: const Text('聊天模型不支持看图时，带图的这一条自动走另一个模型；其余消息仍用原模型'),
+              ),
+              if (_visionEnabled) ...[
+                DropdownButtonFormField<String>(
+                  initialValue: _visionProvider,
+                  isExpanded: true,
+                  items: kProviders
+                      .where((p) => p.id != 'custom')
+                      .map((p) => DropdownMenuItem(
+                            value: p.id,
+                            child: Text(p.name, style: const TextStyle(fontSize: 13)),
+                          ))
+                      .toList(),
+                  onChanged: (id) {
+                    if (id == null) return;
+                    final p = providerById(id);
+                    setState(() {
+                      _visionProvider = id;
+                      if (p.baseUrl.isNotEmpty) _visionBase.text = p.baseUrl;
+                      if (p.models.isNotEmpty) _visionModel.text = p.models.last.contains('vl') || p.models.last.contains('glm') ? p.models.last : p.models.first;
+                    });
+                  },
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _visionBase,
+                  decoration: const InputDecoration(hintText: 'Base URL', isDense: true),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _visionKey,
+                  obscureText: true,
+                  decoration: const InputDecoration(hintText: '看图服务 API Key（留空则用聊天厂商的 Key）', isDense: true),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _visionModel,
+                  decoration: const InputDecoration(hintText: '看图模型，例如 qwen-vl-max / glm-4.5 / kimi-k3', isDense: true),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 16),
+          SectionCard(
+            key: const ValueKey('settings-section-memory'),
+            title: '记忆与会话',
+            children: <Widget>[
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _memoryEnabled,
+                onChanged: (v) => setState(() => _memoryEnabled = v),
+                title: const Text('自动记忆'),
+                subtitle: const Text('每几轮抽取关于你的长期事实，存在本机'),
+              ),
+              const SizedBox(height: 14),
+              Text('现在记得 ${widget.memory.facts.length} 条', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(height: 6),
+              ...widget.memory.facts.map((f) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text('· $f', style: const TextStyle(fontSize: 13)),
+                  )),
+              if (widget.memory.facts.isEmpty)
+                const Text('（还没有记忆，多聊几轮就会出现）', style: TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(height: 14),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _proactiveEnabled,
+                onChanged: (v) => setState(() => _proactiveEnabled = v),
+                title: const Text('主动开口'),
+                subtitle: Text(_proactiveEnabled
+                    ? '你有 $_proactiveIdleMinutes 分钟没说话，它会自己搭一句（只在 App 打开时，每场最多 3 次）'
+                    : '打开后，你不说话时它会主动找你'),
+              ),
+              if (_proactiveEnabled)
+                Padding(
+                  padding: const EdgeInsets.only(left: 4, bottom: 8),
+                  child: Row(
+                    children: [
+                      const Text('空闲触发：', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      Expanded(
+                        child: Slider(
+                          value: _proactiveIdleMinutes.toDouble().clamp(2, 60),
+                          min: 2,
+                          max: 60,
+                          divisions: 29,
+                          label: '$_proactiveIdleMinutes 分钟',
+                          onChanged: (v) => setState(() => _proactiveIdleMinutes = v.round()),
+                        ),
+                      ),
+                      Text('$_proactiveIdleMinutes 分钟', style: const TextStyle(fontSize: 12)),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          SectionCard(
+            key: const ValueKey('settings-section-scene'),
+            title: '场景',
+            children: <Widget>[
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _sceneEnabled,
+                onChanged: (v) => setState(() => _sceneEnabled = v),
+                title: const Text('场景模式（背后的房间）'),
+                subtitle: const Text('对话浮在房间画面上。往 assets/scene/ 放 room.webp / room.jpg 就能换成自己的房间'),
+              ),
+              if (_sceneEnabled)
+                FutureBuilder<List<String>>(
+                  future: _sceneChoices(),
+                  builder: (context, snap) {
+                    final options = snap.data ?? const <String>[];
+                    if (options.isEmpty) return const SizedBox.shrink();
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: DropdownButtonFormField<String>(
+                        initialValue: options.contains(_sceneImage)
+                            ? _sceneImage
+                            : (options.contains('assets/scene/room.webp')
+                                ? 'assets/scene/room.webp'
+                                : options.first),
+                        isExpanded: true,
+                        decoration: const InputDecoration(labelText: '房间背景', isDense: true),
+                        items: options
+                            .map((path) => DropdownMenuItem(
+                                  value: path,
+                                  child: Text(_sceneLabel(path), style: const TextStyle(fontSize: 13)),
+                                ))
+                            .toList(),
+                        onChanged: (v) => setState(() => _sceneImage = v ?? ''),
+                      ),
+                    );
+                  },
+                ),
               Padding(
-                padding: const EdgeInsets.only(left: 4),
+                padding: const EdgeInsets.only(left: 4, bottom: 8),
                 child: Row(
                   children: [
-                    const Text('语速：', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    const Text('压暗：', style: TextStyle(fontSize: 12, color: Colors.grey)),
                     Expanded(
                       child: Slider(
-                        value: _ttsSpeed,
-                        min: 0.6,
-                        max: 1.5,
-                        divisions: 18,
-                        label: _ttsSpeed.toStringAsFixed(2),
-                        onChanged: (v) => setState(() => _ttsSpeed = v),
+                        value: _sceneDim,
+                        min: 0,
+                        max: 1,
+                        divisions: 20,
+                        label: '${(_sceneDim * 100).round()}%',
+                        onChanged: (v) => setState(() => _sceneDim = v),
                       ),
                     ),
-                    Text(_ttsSpeed.toStringAsFixed(2), style: const TextStyle(fontSize: 12)),
+                    Text('${(_sceneDim * 100).round()}%', style: const TextStyle(fontSize: 12)),
                   ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          SectionCard(
+            key: const ValueKey('settings-section-comfy'),
+            title: 'ComfyUI',
+            children: <Widget>[
+              const _Label('ComfyUI（电脑上的画图服务）'),
+              TextField(
+                controller: _comfyUrl,
+                decoration: const InputDecoration(
+                  hintText: 'http://192.168.1.10:8188',
+                  isDense: true,
+                  helperText: '手机和电脑要在同一个局域网；ComfyUI 需以 --listen 0.0.0.0 启动',
                 ),
               ),
               Align(
                 alignment: Alignment.centerLeft,
                 child: TextButton.icon(
-                  onPressed: _downloadingTts ? null : _downloadTts,
-                  icon: const Icon(Icons.download_outlined, size: 18),
-                  label: Text(_ttsModelReady ? '模型已就绪（点击重新下载）' : '下载语音模型（约 147 MB）'),
+                  onPressed: _comfyTesting ? null : _testComfy,
+                  icon: const Icon(Icons.wifi_tethering, size: 16),
+                  label: const Text('测试连接', style: TextStyle(fontSize: 12)),
+                ),
+              ),
+              if (_comfyStatus.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(
+                    _comfyStatus,
+                    style: const TextStyle(fontSize: 11.5, color: Color(0xFF9FD0FF)),
+                  ),
+                ),
+              const SizedBox(height: 14),
+              const _Label('文生图工作流（她调用 draw 时用）'),
+              TextField(
+                controller: _comfyWorkflow,
+                minLines: 2,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                  hintText: '「Save (API Format)」导出的 JSON',
+                  isDense: true,
+                  helperText: '提示词会自动写进采样器的正向/负向输入',
+                ),
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () => setState(() {
+                    _comfyWorkflow.text = kComfySdTurboWorkflow;
+                    if (_comfyUrl.text.trim().isEmpty || _comfyUrl.text.contains('192.168.1.10')) {
+                      // convenient for local testing
+                    }
+                  }),
+                  icon: const Icon(Icons.auto_fix_high, size: 16),
+                  label: const Text('填入示例（SD-Turbo）', style: TextStyle(fontSize: 12)),
+                ),
+              ),
+              const SizedBox(height: 14),
+              const _Label('去背景工作流（调用 remove_bg 时用）'),
+              TextField(
+                controller: _comfyRemoveBg,
+                minLines: 2,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                  hintText: '需要一个 LoadImage + 抠图节点 + SaveImage 的工作流',
+                  isDense: true,
+                  helperText: '例：ComfyUI-rembg / BRIA RMBG / INSPYRENET 等自定义节点',
+                ),
+              ),
+              const SizedBox(height: 14),
+              const _Label('图片编辑工作流（调用 edit_image 时用）'),
+              TextField(
+                controller: _comfyEdit,
+                minLines: 2,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                  hintText: 'LoadImage → 编辑节点（img2img / inpaint / Kontext / Qwen-Edit）→ SaveImage',
+                  isDense: true,
+                  helperText: '对话里最近一张图会被自动上传并注入 LoadImage',
+                ),
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () => setState(() => _comfyEdit.text = kComfyImg2ImgWorkflow),
+                  icon: const Icon(Icons.auto_fix_high, size: 16),
+                  label: const Text('填入示例（SD-Turbo img2img）', style: TextStyle(fontSize: 12)),
                 ),
               ),
             ],
-          ],
-          const _Label('语音识别服务（录音后上传这里转文字，不用手机自带识别）'),
-          DropdownButtonFormField<String>(
-            initialValue: _asrPreset,
-            isExpanded: true,
-            items: kAsrPresets
-                .map((p) => DropdownMenuItem(
-                      value: p.id,
-                      child: Text(p.name, style: const TextStyle(fontSize: 13)),
-                    ))
-                .toList(),
-            onChanged: (id) {
-              if (id == null) return;
-              final p = asrById(id);
-              setState(() {
-                _asrPreset = id;
-                if (p.baseUrl.isNotEmpty) _asrBase.text = p.baseUrl;
-                if (p.models.isNotEmpty) _asr.text = p.models.first;
-              });
-            },
           ),
-          if (_asrPreset == 'local') ...[
-            const SizedBox(height: 8),
-            DropdownButtonFormField<String>(
-              initialValue: _asrLocalModel,
-              isExpanded: true,
-              decoration: const InputDecoration(labelText: '离线模型', isDense: true),
-              items: LocalAsrImpl.models.entries
-                  .map((e) => DropdownMenuItem(
-                        value: e.key,
-                        child: Text(e.value, style: const TextStyle(fontSize: 13)),
-                      ))
-                  .toList(),
-              onChanged: (v) => setState(() => _asrLocalModel = v ?? 'dolphin'),
-            ),
-          ],
-          if (_asrPreset != 'same' && _asrPreset != 'local') ...[
-            const SizedBox(height: 8),
-            TextField(
-              controller: _asrBase,
-              decoration: const InputDecoration(hintText: 'Base URL，例如 https://api.siliconflow.cn/v1', isDense: true),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _asrKey,
-              obscureText: true,
-              decoration: const InputDecoration(hintText: '语音服务 API Key', isDense: true),
-            ),
-          ],
-          const SizedBox(height: 8),
-          TextField(
-            controller: _asr,
-            decoration: const InputDecoration(hintText: '转写模型，例如 FunAudioLLM/SenseVoiceSmall', isDense: true),
-          ),
-          const Divider(height: 28),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            value: _visionEnabled,
-            onChanged: (v) => setState(() => _visionEnabled = v),
-            title: const Text('发图时切到看图模型'),
-            subtitle: const Text('聊天模型不支持看图时，带图的这一条自动走另一个模型；其余消息仍用原模型'),
-          ),
-          if (_visionEnabled) ...[
-            DropdownButtonFormField<String>(
-              initialValue: _visionProvider,
-              isExpanded: true,
-              items: kProviders
-                  .where((p) => p.id != 'custom')
-                  .map((p) => DropdownMenuItem(
-                        value: p.id,
-                        child: Text(p.name, style: const TextStyle(fontSize: 13)),
-                      ))
-                  .toList(),
-              onChanged: (id) {
-                if (id == null) return;
-                final p = providerById(id);
-                setState(() {
-                  _visionProvider = id;
-                  if (p.baseUrl.isNotEmpty) _visionBase.text = p.baseUrl;
-                  if (p.models.isNotEmpty) _visionModel.text = p.models.last.contains('vl') || p.models.last.contains('glm') ? p.models.last : p.models.first;
-                });
-              },
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _visionBase,
-              decoration: const InputDecoration(hintText: 'Base URL', isDense: true),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _visionKey,
-              obscureText: true,
-              decoration: const InputDecoration(hintText: '看图服务 API Key（留空则用聊天厂商的 Key）', isDense: true),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _visionModel,
-              decoration: const InputDecoration(hintText: '看图模型，例如 qwen-vl-max / glm-4.5 / kimi-k3', isDense: true),
-            ),
-          ],
-          const SizedBox(height: 12),
-          const Divider(height: 28),
-          const _Label('ComfyUI（电脑上的画图服务）'),
-          TextField(
-            controller: _comfyUrl,
-            decoration: const InputDecoration(
-              hintText: 'http://192.168.1.10:8188',
-              isDense: true,
-              helperText: '手机和电脑要在同一个局域网；ComfyUI 需以 --listen 0.0.0.0 启动',
-            ),
-          ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              onPressed: _comfyTesting ? null : _testComfy,
-              icon: const Icon(Icons.wifi_tethering, size: 16),
-              label: const Text('测试连接', style: TextStyle(fontSize: 12)),
-            ),
-          ),
-          if (_comfyStatus.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Text(
-                _comfyStatus,
-                style: const TextStyle(fontSize: 11.5, color: Color(0xFF9FD0FF)),
-              ),
-            ),
-          const SizedBox(height: 8),
-          const _Label('文生图工作流（她调用 draw 时用）'),
-          TextField(
-            controller: _comfyWorkflow,
-            minLines: 2,
-            maxLines: 6,
-            decoration: const InputDecoration(
-              hintText: '「Save (API Format)」导出的 JSON',
-              isDense: true,
-              helperText: '提示词会自动写进采样器的正向/负向输入',
-            ),
-          ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              onPressed: () => setState(() {
-                _comfyWorkflow.text = kComfySdTurboWorkflow;
-                if (_comfyUrl.text.trim().isEmpty || _comfyUrl.text.contains('192.168.1.10')) {
-                  // convenient for local testing
-                }
-              }),
-              icon: const Icon(Icons.auto_fix_high, size: 16),
-              label: const Text('填入示例（SD-Turbo）', style: TextStyle(fontSize: 12)),
-            ),
-          ),
-          const SizedBox(height: 12),
-          const _Label('去背景工作流（调用 remove_bg 时用）'),
-          TextField(
-            controller: _comfyRemoveBg,
-            minLines: 2,
-            maxLines: 6,
-            decoration: const InputDecoration(
-              hintText: '需要一个 LoadImage + 抠图节点 + SaveImage 的工作流',
-              isDense: true,
-              helperText: '例：ComfyUI-rembg / BRIA RMBG / INSPYRENET 等自定义节点',
-            ),
-          ),
-          const SizedBox(height: 12),
-          const _Label('图片编辑工作流（调用 edit_image 时用）'),
-          TextField(
-            controller: _comfyEdit,
-            minLines: 2,
-            maxLines: 6,
-            decoration: const InputDecoration(
-              hintText: 'LoadImage → 编辑节点（img2img / inpaint / Kontext / Qwen-Edit）→ SaveImage',
-              isDense: true,
-              helperText: '对话里最近一张图会被自动上传并注入 LoadImage',
-            ),
-          ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              onPressed: () => setState(() => _comfyEdit.text = kComfyImg2ImgWorkflow),
-              icon: const Icon(Icons.auto_fix_high, size: 16),
-              label: const Text('填入示例（SD-Turbo img2img）', style: TextStyle(fontSize: 12)),
-            ),
-          ),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            value: _sceneEnabled,
-            onChanged: (v) => setState(() => _sceneEnabled = v),
-            title: const Text('场景模式（背后的房间）'),
-            subtitle: const Text('对话浮在房间画面上。往 assets/scene/ 放 room.webp / room.jpg 就能换成自己的房间'),
-          ),
-          if (_sceneEnabled)
-            FutureBuilder<List<String>>(
-              future: _sceneChoices(),
-              builder: (context, snap) {
-                final options = snap.data ?? const <String>[];
-                if (options.isEmpty) return const SizedBox.shrink();
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: DropdownButtonFormField<String>(
-                    initialValue: options.contains(_sceneImage)
-                        ? _sceneImage
-                        : (options.contains('assets/scene/room.webp')
-                            ? 'assets/scene/room.webp'
-                            : options.first),
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: '房间背景', isDense: true),
-                    items: options
-                        .map((path) => DropdownMenuItem(
-                              value: path,
-                              child: Text(_sceneLabel(path), style: const TextStyle(fontSize: 13)),
-                            ))
-                        .toList(),
-                    onChanged: (v) => setState(() => _sceneImage = v ?? ''),
-                  ),
-                );
-              },
-            ),
-            Padding(
-              padding: const EdgeInsets.only(left: 4, bottom: 8),
-              child: Row(
-                children: [
-                  const Text('压暗：', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  Expanded(
-                    child: Slider(
-                      value: _sceneDim,
-                      min: 0,
-                      max: 1,
-                      divisions: 20,
-                      label: '${(_sceneDim * 100).round()}%',
-                      onChanged: (v) => setState(() => _sceneDim = v),
+          const SizedBox(height: 16),
+          SectionCard(
+            key: const ValueKey('settings-section-about'),
+            title: '关于',
+            children: <Widget>[
+              Container(
+                margin: const EdgeInsets.only(bottom: 16),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF12203A),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white.withValues(alpha: .08)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('自检', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                    SelectableText(
+                      'build=$kBuildTag\n'
+                      'baseUrl=${_base.text}\n'
+                      'model=${_model.text}\n'
+                      'key长度=${widget.initial.apiKey.length}（注入源长度 ${kKeyInjected ? kInjectedKey.length : 0}）',
+                      style: const TextStyle(fontSize: 11, height: 1.5, color: Color(0xFF9FB6D6)),
                     ),
-                  ),
-                  Text('${(_sceneDim * 100).round()}%', style: const TextStyle(fontSize: 12)),
-                ],
+                  ],
+                ),
               ),
-            ),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            value: _proactiveEnabled,
-            onChanged: (v) => setState(() => _proactiveEnabled = v),
-            title: const Text('主动开口'),
-            subtitle: Text(_proactiveEnabled
-                ? '你有 $_proactiveIdleMinutes 分钟没说话，它会自己搭一句（只在 App 打开时，每场最多 3 次）'
-                : '打开后，你不说话时它会主动找你'),
-          ),
-          if (_proactiveEnabled)
-            Padding(
-              padding: const EdgeInsets.only(left: 4, bottom: 8),
-              child: Row(
-                children: [
-                  const Text('空闲触发：', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  Expanded(
-                    child: Slider(
-                      value: _proactiveIdleMinutes.toDouble().clamp(2, 60),
-                      min: 2,
-                      max: 60,
-                      divisions: 29,
-                      label: '$_proactiveIdleMinutes 分钟',
-                      onChanged: (v) => setState(() => _proactiveIdleMinutes = v.round()),
-                    ),
-                  ),
-                  Text('$_proactiveIdleMinutes 分钟', style: const TextStyle(fontSize: 12)),
-                ],
+              const SizedBox(height: 14),
+              const Text(
+                '所有数据只存在这台设备上：Key、对话、记忆都不经过任何第三方服务器。',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
               ),
-            ),
-          const Divider(height: 28),
-          Text('现在记得 ${widget.memory.facts.length} 条', style: const TextStyle(fontSize: 12, color: Colors.grey)),
-          const SizedBox(height: 6),
-          ...widget.memory.facts.map((f) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Text('· $f', style: const TextStyle(fontSize: 13)),
-              )),
-          if (widget.memory.facts.isEmpty)
-            const Text('（还没有记忆，多聊几轮就会出现）', style: TextStyle(fontSize: 12, color: Colors.grey)),
-          const SizedBox(height: 20),
-          const Text(
-            '所有数据只存在这台设备上：Key、对话、记忆都不经过任何第三方服务器。',
-            style: TextStyle(fontSize: 12, color: Colors.grey),
+            ],
           ),
         ],
       ),
