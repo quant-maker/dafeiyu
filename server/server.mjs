@@ -150,6 +150,12 @@ function proxyComfy(req, res) {
   const lib = target.protocol === 'https:' ? https : http
   const headers = { ...req.headers, host: target.host }
   delete headers['accept-encoding']
+  // ComfyUI rejects cross-origin POSTs (403) when an Origin header is present,
+  // so the proxy must look like a plain local client.
+  delete headers['origin']
+  delete headers['referer']
+  delete headers['sec-fetch-site']
+  delete headers['sec-fetch-mode']
 
   const upstream = lib.request(
     { hostname: target.hostname, port: target.port || 80, path: target.pathname + target.search, method: req.method, headers },
