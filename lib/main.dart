@@ -17,6 +17,7 @@ import 'feeds/footprints.dart';
 import 'providers.dart';
 import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
+import 'ui/attachments.dart';
 import 'ui/chat_app_bar.dart';
 import 'ui/composer.dart';
 import 'ui/empty_state.dart';
@@ -1812,40 +1813,15 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
 
   Widget _pendingImageBar() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-      child: Row(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: Image.memory(base64Decode(_pendingImage!), width: 54, height: 54, fit: BoxFit.cover),
-          ),
-          const SizedBox(width: 10),
-          Text('图片已就绪', style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: .55))),
-          const Spacer(),
-          IconButton(onPressed: () => setState(() => _pendingImage = null), icon: const Icon(Icons.close, size: 18)),
-        ],
-      ),
+    return PendingImageBar(
+      bytes: base64Decode(_pendingImage!),
+      onRemove: () => setState(() => _pendingImage = null),
     );
   }
 
   Widget _listeningBar() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
-      child: Row(
-        children: [
-          const Icon(Icons.graphic_eq, size: 14, color: Color(0xFF4AA3FF)),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              _voiceHint.isEmpty ? '正在听…' : _voiceHint,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Color(0xFF8FC6FF), fontSize: 12),
-            ),
-          ),
-        ],
-      ),
+    return ListeningBar(
+      hint: _voiceHint.isEmpty ? '正在听…' : _voiceHint,
     );
   }
 
