@@ -44,3 +44,46 @@ Exit code: 0
 ```
 (no output)
 ```
+
+---
+
+## Remaining F2 findings (round 2)
+
+### Fix 1 — scroll-to-bottom button moved into message area
+`lib/main.dart`: the jump-to-bottom `Positioned` is now a child of a `Stack` that wraps the `Expanded` message area (`right: 12, bottom: 8`), so it can never overlap the composer or the pending/listening bars. Old outer sibling `Positioned(bottom: 72)` removed. `_showJump`, `_onScroll`, listener add/remove, 40px size, tooltip and icon styling unchanged.
+
+### Fix 2 — message image refreshes when payload changes
+`lib/ui/message_list.dart`: `_MessageImage` is now keyed by `ValueKey<String>(b64)` instead of `ObjectKey(m)`, and `_MessageImageState` implements `didUpdateWidget` re-decoding into a mutable `Uint8List _bytes` when `widget.base64 != oldWidget.base64`. Content-only updates keep the same key and do not re-decode.
+
+### Verification
+
+#### `flutter analyze` (whole repo)
+```
+Analyzing dafeiyu...
+No issues found! (ran in 12.9s)
+```
+Exit code: 0
+
+#### `flutter test`
+```
+00:06 +55: All tests passed!
+```
+
+New test in `test/message_list_test.dart`: `message image re-decodes when its payload changes` — pumps a message with a 1×1 red PNG, mutates `message.imageBase64` in place to a 1×1 blue PNG, pumps again, and asserts the rendered `Image`'s `MemoryImage.bytes` equal the new decoded payload and are not identical to the old bytes.
+
+#### `grep -n "bottom: 72" lib/main.dart`
+```
+(no matches)
+```
+
+#### `grep -n "Expanded(" lib/main.dart`
+```
+1829:Expanded(
+2376:Expanded(
+2568:Expanded(
+2591:Expanded(
+2650:Expanded(
+2810:Expanded(
+```
+Line 1829 is the new message-area `Expanded` wrapping the `Stack` with the in-area scroll button.
+
