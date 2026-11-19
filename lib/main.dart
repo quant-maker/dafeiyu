@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -19,6 +18,7 @@ import 'providers.dart';
 import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'ui/chat_app_bar.dart';
+import 'ui/composer.dart';
 import 'ui/empty_state.dart';
 import 'ui/layout.dart';
 import 'ui/message_list.dart';
@@ -1850,81 +1850,16 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
 
   Widget _composer() {
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(26),
-          child: BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-            child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Colors.white.withValues(alpha: .16), Colors.white.withValues(alpha: .06)],
-            ),
-            borderRadius: BorderRadius.circular(26),
-            border: Border.all(color: Colors.white.withValues(alpha: .22)),
-            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: .22), blurRadius: 18, offset: const Offset(0, 6))],
-          ),
-          child: Row(
-            children: [
-              IconButton(
-                onPressed: _busy ? null : _imageSheet,
-                icon: const Icon(Icons.add_photo_alternate_outlined, size: 22),
-                color: Colors.white.withValues(alpha: .6),
-                tooltip: '发图片',
-              ),
-              Expanded(
-                child: TextField(
-                  controller: _input,
-                  minLines: 1,
-                  maxLines: 5,
-                  textInputAction: TextInputAction.send,
-                  onSubmitted: (_) => _send(),
-                  style: const TextStyle(fontSize: 14.5),
-                  decoration: InputDecoration(
-                    hintText: _listening ? '正在听…' : '和大肥鱼说点什么…',
-                    hintStyle: TextStyle(color: Colors.white.withValues(alpha: .3), fontSize: 14),
-                    border: InputBorder.none,
-                    isDense: true,
-                    contentPadding: const EdgeInsets.symmetric(vertical: 10),
-                  ),
-                ),
-              ),
-              IconButton(
-                onPressed: _busy ? null : _toggleVoice,
-                icon: Icon(_listening ? Icons.stop_circle_outlined : Icons.mic_none),
-                color: _listening ? const Color(0xFF4AA3FF) : Colors.white.withValues(alpha: .6),
-                tooltip: _listening ? '停止' : '说话',
-              ),
-              _busy
-                  ? IconButton(
-                      onPressed: _stop,
-                      icon: const Icon(Icons.stop_circle, color: Color(0xFFFF8A8A)),
-                      tooltip: '停止生成',
-                    )
-                  : Container(
-                      margin: const EdgeInsets.only(left: 2),
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: LinearGradient(colors: [Color(0xFF5AB0FF), Color(0xFF2F6FD0)]),
-                      ),
-                      child: IconButton(
-                        onPressed: _send,
-                        icon: const Icon(Icons.arrow_upward, size: 20, color: Color(0xFF04101F)),
-                        tooltip: '发送',
-                      ),
-                    ),
-            ],
-          ),
-        ),
-          ),
-        ),
-      ),
+    return Composer(
+      controller: _input,
+      busy: _busy,
+      listening: _listening,
+      onImage: _imageSheet,
+      onMic: _toggleVoice,
+      onSend: _send,
+      onStop: _stop,
+      onSubmitted: (_) => _send(),
+      hint: _listening ? '正在听…' : '和大肥鱼说点什么…',
     );
   }
 }
