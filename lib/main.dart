@@ -19,6 +19,7 @@ import 'providers.dart';
 import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'ui/chat_app_bar.dart';
+import 'ui/message_list.dart';
 import 'ui/theme.dart';
 import 'scene/scene_stage.dart';
 import 'voice/local_asr_web.dart' if (dart.library.io) 'voice/local_asr_io.dart';
@@ -420,12 +421,10 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   static const _charsPerSecond = 46.0;
   Timer? _idleTimer;
   int _proactiveCount = 0;
-  late final AnimationController _dots;
 
   @override
   void initState() {
     super.initState();
-    _dots = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat();
     Settings.load().then((s) {
       debugPrint('[feiyu] settings loaded base=${s.baseUrl} model=${s.model} keyLen=${s.apiKey.length}');
       if (mounted) {
@@ -481,7 +480,6 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     _idleTimer?.cancel();
     _input.dispose();
     _scroll.dispose();
-    _dots.dispose();
     super.dispose();
   }
 
@@ -1837,168 +1835,11 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   }
 
   Widget _messageList() {
-    return ListView.builder(
-      controller: _scroll,
-      padding: const EdgeInsets.fromLTRB(14, 56, 14, 20),
-      itemCount: _messages.length,
-      itemBuilder: (context, i) {
-        final m = _messages[i];
-        final mine = m.role == 'user';
-        final typing = !mine && _busy && _waitingFirstToken && m.content.isEmpty;
-        return _message(m, mine, typing, i);
-      },
-    );
-  }
-
-  /// Her replies are film subtitles etched into the glass: no bubble, layered
-  /// shadows for legibility. The owner keeps a compact pill so the back-and-forth
-  /// still reads like a conversation.
-  Widget _message(Message m, bool mine, bool typing, int index) {
-    final showLabel = !mine && (index == 0 || _messages[index - 1].role != 'assistant');
-    final isNewest = index == _messages.length - 1;
-
-    if (mine) return _userLine(m, typing);
-
-    final text = SelectableText(
-      m.content,
-      style: _etched(size: 19.5),
-    );
-
-    final body = Padding(
-      padding: EdgeInsets.only(left: 6, right: 44, top: showLabel ? 14 : 10, bottom: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (showLabel)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '🐟',
-                    style: TextStyle(fontSize: 12, shadows: _etchShadows),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    '大肥鱼',
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      letterSpacing: 1.6,
-                      fontWeight: FontWeight.w600,
-                      color: const Color(0xFF9FD0FF).withValues(alpha: .9),
-                      shadows: _etchShadows,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          if (m.imageBase64 != null) ...[
-            ClipRRect(
-              borderRadius: BorderRadius.circular(14),
-              child: GestureDetector(
-                onTap: () => _openImage(m.imageBase64!),
-                child: Image.memory(base64Decode(m.imageBase64!), width: 260, fit: BoxFit.contain),
-              ),
-            ),
-            const SizedBox(height: 10),
-          ],
-          typing ? _TypingDots(controller: _dots) : text,
-        ],
-      ),
-    );
-
-    if (!isNewest) return body;
-    // The newest line breathes in instead of popping.
-    return TweenAnimationBuilder<double>(
-      key: ValueKey(m),
-      tween: Tween(begin: .62, end: 1),
-      duration: const Duration(milliseconds: 1400),
-      curve: Curves.easeOut,
-      builder: (_, value, child) => Opacity(opacity: value, child: child),
-      child: body,
-    );
-  }
-
-  static const _etchShadows = [
-    Shadow(color: Color(0xCC000000), blurRadius: 3, offset: Offset(0, 1)),
-    Shadow(color: Color(0xB3000000), blurRadius: 16, offset: Offset(0, 3)),
-    Shadow(color: Color(0x33FFFFFF), blurRadius: 1, offset: Offset(0, -1)),
-  ];
-
-  /// Text that looks engraved into the pane: dark lower edge, lit upper edge,
-  /// and a faint cool halo.
-  TextStyle _etched({required double size}) => TextStyle(
-        fontSize: size,
-        height: 1.62,
-        letterSpacing: .2,
-        fontWeight: FontWeight.w500,
-        color: const Color(0xFFF4F9FF),
-        shadows: _etchShadows,
-      );
-
-  /// The owner has no bubble either: right-aligned, smaller, cooler, with a
-  /// hairline accent so the two speakers never blur together.
-  Widget _userLine(Message m, bool typing) {
-    const accent = Color(0xFF6FB6FF);
-    final width = MediaQuery.of(context).size.width * .74;
-
-    return Container(
-      margin: const EdgeInsets.only(top: 16, bottom: 8, left: 40),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.end,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Flexible(
-            child: Container(
-              constraints: BoxConstraints(maxWidth: width),
-              padding: const EdgeInsets.only(right: 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  if (m.imageBase64 != null) ...[
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.memory(
-                        base64Decode(m.imageBase64!),
-                        width: 170,
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                  if (typing)
-                    _TypingDots(controller: _dots)
-                  else if (m.content.trim().isNotEmpty)
-                    Text(
-                      m.content,
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                        fontSize: 15,
-                        height: 1.5,
-                        color: Color(0xFFD6E8FF),
-                        shadows: [
-                          Shadow(color: Color(0xCC000000), blurRadius: 3, offset: Offset(0, 1)),
-                          Shadow(color: Color(0x99000000), blurRadius: 14, offset: Offset(0, 2)),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-          // hairline accent: reads as "you", without drawing a box
-          Container(
-            width: 2,
-            height: 22,
-            margin: const EdgeInsets.only(top: 4),
-            decoration: BoxDecoration(
-              color: accent.withValues(alpha: .75),
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-        ],
-      ),
+    return MessageList(
+      messages: _messages,
+      busy: _busy,
+      waitingFirstToken: _waitingFirstToken,
+      onOpenImage: _openImage,
     );
   }
 
@@ -2127,30 +1968,6 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
           ),
         ),
       ),
-    );
-  }
-}
-
-class _TypingDots extends AnimatedWidget {
-  const _TypingDots({required AnimationController controller}) : super(listenable: controller);
-  @override
-  Widget build(BuildContext context) {
-    final t = (listenable as AnimationController).value;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: List.generate(3, (i) {
-        final phase = (t + i * 0.2) % 1.0;
-        final opacity = 0.25 + 0.75 * (phase < 0.5 ? phase * 2 : (1 - phase) * 2);
-        return Container(
-          margin: const EdgeInsets.symmetric(horizontal: 2.5, vertical: 6),
-          width: 6,
-          height: 6,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: Colors.white.withValues(alpha: opacity.clamp(0.2, 1.0)),
-          ),
-        );
-      }),
     );
   }
 }
