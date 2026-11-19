@@ -2474,38 +2474,55 @@ class _SettingsPageState extends State<SettingsPage> {
             key: const ValueKey('settings-section-memory'),
             title: '记忆与会话',
             children: <Widget>[
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
+              _SettingsSwitch(
+                title: '自动记忆',
+                subtitle: '每几轮抽取关于你的长期事实，存在本机',
                 value: _memoryEnabled,
                 onChanged: (v) => setState(() => _memoryEnabled = v),
-                title: const Text('自动记忆'),
-                subtitle: const Text('每几轮抽取关于你的长期事实，存在本机'),
               ),
               const SizedBox(height: 14),
-              Text('现在记得 ${widget.memory.facts.length} 条', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              Text('现在记得 ${widget.memory.facts.length} 条', style: AppType.caption.copyWith(color: AppPalette.text2)),
               const SizedBox(height: 6),
               ...widget.memory.facts.map((f) => Padding(
                     padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Text('· $f', style: const TextStyle(fontSize: 13)),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Container(
+                            width: 6,
+                            height: 6,
+                            decoration: const BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: AppPalette.primary,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(f, style: AppType.bodySmall.copyWith(color: AppPalette.text2)),
+                        ),
+                      ],
+                    ),
                   )),
               if (widget.memory.facts.isEmpty)
-                const Text('（还没有记忆，多聊几轮就会出现）', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                Text('（还没有记忆，多聊几轮就会出现）', style: AppType.caption.copyWith(color: AppPalette.text3)),
               const SizedBox(height: 14),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
+              _SettingsSwitch(
+                title: '主动开口',
+                subtitle: _proactiveEnabled
+                    ? '你有 $_proactiveIdleMinutes 分钟没说话，它会自己搭一句（只在 App 打开时，每场最多 3 次）'
+                    : '打开后，你不说话时它会主动找你',
                 value: _proactiveEnabled,
                 onChanged: (v) => setState(() => _proactiveEnabled = v),
-                title: const Text('主动开口'),
-                subtitle: Text(_proactiveEnabled
-                    ? '你有 $_proactiveIdleMinutes 分钟没说话，它会自己搭一句（只在 App 打开时，每场最多 3 次）'
-                    : '打开后，你不说话时它会主动找你'),
               ),
               if (_proactiveEnabled)
                 Padding(
                   padding: const EdgeInsets.only(left: 4, bottom: 8),
                   child: Row(
                     children: [
-                      const Text('空闲触发：', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      Text('空闲触发：', style: AppType.caption.copyWith(color: AppPalette.text3)),
                       Expanded(
                         child: Slider(
                           value: _proactiveIdleMinutes.toDouble().clamp(2, 60),
@@ -2516,7 +2533,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           onChanged: (v) => setState(() => _proactiveIdleMinutes = v.round()),
                         ),
                       ),
-                      Text('$_proactiveIdleMinutes 分钟', style: const TextStyle(fontSize: 12)),
+                      Text('$_proactiveIdleMinutes 分钟', style: AppType.caption.copyWith(color: AppPalette.text2)),
                     ],
                   ),
                 ),
@@ -2527,14 +2544,13 @@ class _SettingsPageState extends State<SettingsPage> {
             key: const ValueKey('settings-section-scene'),
             title: '场景',
             children: <Widget>[
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
+              _SettingsSwitch(
+                title: '场景模式（背后的房间）',
+                subtitle: '对话浮在房间画面上。往 assets/scene/ 放 room.webp / room.jpg 就能换成自己的房间',
                 value: _sceneEnabled,
                 onChanged: (v) => setState(() => _sceneEnabled = v),
-                title: const Text('场景模式（背后的房间）'),
-                subtitle: const Text('对话浮在房间画面上。往 assets/scene/ 放 room.webp / room.jpg 就能换成自己的房间'),
               ),
-              if (_sceneEnabled)
+              if (_sceneEnabled) ...[
                 FutureBuilder<List<String>>(
                   future: _sceneChoices(),
                   builder: (context, snap) {
@@ -2553,7 +2569,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         items: options
                             .map((path) => DropdownMenuItem(
                                   value: path,
-                                  child: Text(_sceneLabel(path), style: const TextStyle(fontSize: 13)),
+                                  child: Text(_sceneLabel(path), style: AppType.bodySmall),
                                 ))
                             .toList(),
                         onChanged: (v) => setState(() => _sceneImage = v ?? ''),
@@ -2561,25 +2577,26 @@ class _SettingsPageState extends State<SettingsPage> {
                     );
                   },
                 ),
-              Padding(
-                padding: const EdgeInsets.only(left: 4, bottom: 8),
-                child: Row(
-                  children: [
-                    const Text('压暗：', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                    Expanded(
-                      child: Slider(
-                        value: _sceneDim,
-                        min: 0,
-                        max: 1,
-                        divisions: 20,
-                        label: '${(_sceneDim * 100).round()}%',
-                        onChanged: (v) => setState(() => _sceneDim = v),
+                Padding(
+                  padding: const EdgeInsets.only(left: 4, bottom: 8),
+                  child: Row(
+                    children: [
+                      Text('压暗：', style: AppType.caption.copyWith(color: AppPalette.text3)),
+                      Expanded(
+                        child: Slider(
+                          value: _sceneDim,
+                          min: 0,
+                          max: 1,
+                          divisions: 20,
+                          label: '${(_sceneDim * 100).round()}%',
+                          onChanged: (v) => setState(() => _sceneDim = v),
+                        ),
                       ),
-                    ),
-                    Text('${(_sceneDim * 100).round()}%', style: const TextStyle(fontSize: 12)),
-                  ],
+                      Text('${(_sceneDim * 100).round()}%', style: AppType.caption.copyWith(color: AppPalette.text2)),
+                    ],
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
           const SizedBox(height: 16),
