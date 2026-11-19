@@ -1910,6 +1910,7 @@ class _SettingsPageState extends State<SettingsPage> {
   String _comfyStatus = '';
   bool _comfyTesting = false;
   bool _downloadingTts = false;
+  double _ttsProgress = 0;
   late String _provider;
   late Map<String, String> _keys;
   late final TextEditingController _asr;
@@ -2040,10 +2041,13 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _downloadTts() async {
     setState(() {
       _downloadingTts = true;
+      _ttsProgress = 0;
     });
     try {
       final engine = await LocalTtsImpl.create();
-      await engine.download();
+      await engine.download(onProgress: (p) {
+        if (mounted) setState(() => _ttsProgress = p);
+      });
       final ok = await engine.ready;
       if (mounted) setState(() => _ttsModelReady = ok);
     } catch (e) {
@@ -2250,8 +2254,11 @@ class _SettingsPageState extends State<SettingsPage> {
             key: const ValueKey('settings-section-persona'),
             title: '人设',
             children: <Widget>[
-              const _Label('人设（system prompt）'),
-              TextField(controller: _persona, minLines: 5, maxLines: 12),
+              SettingsRow(
+                label: '人设（system prompt）',
+                description: '她说话的方式，可随时改写',
+                child: TextField(controller: _persona, minLines: 5, maxLines: 12),
+              ),
             ],
           ),
           const SizedBox(height: 16),
@@ -2261,56 +2268,58 @@ class _SettingsPageState extends State<SettingsPage> {
             children: <Widget>[
               const SectionHeader(label: '语音朗读'),
               const SizedBox(height: 14),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
+              _SettingsSwitch(
+                title: '语音朗读',
+                subtitle: '回答完念出来（前三句左右）',
                 value: _ttsEnabled,
                 onChanged: (v) => setState(() => _ttsEnabled = v),
-                title: const Text('语音朗读'),
-                subtitle: const Text('回答完念出来（前三句左右）'),
               ),
               if (_ttsEnabled) ...[
-                DropdownButtonFormField<String>(
-                  initialValue: _ttsEngine,
-                  isExpanded: true,
-                  decoration: const InputDecoration(labelText: '发音引擎', isDense: true),
-                  items: const [
-                    DropdownMenuItem(value: 'system', child: Text('系统语音（免费、机械）', style: TextStyle(fontSize: 13))),
-                    DropdownMenuItem(value: 'local', child: Text('本机 Kokoro（自然、离线）', style: TextStyle(fontSize: 13))),
-                  ],
-                  onChanged: (v) => setState(() => _ttsEngine = v ?? 'system'),
+                const SizedBox(height: 14),
+                SettingsRow(
+                  label: '发音引擎',
+                  child: DropdownButtonFormField<String>(
+                    initialValue: _ttsEngine,
+                    isExpanded: true,
+                    items: const [
+                      DropdownMenuItem(value: 'system', child: Text('系统语音（免费、机械）', style: AppType.bodySmall)),
+                      DropdownMenuItem(value: 'local', child: Text('本机 Kokoro（自然、离线）', style: AppType.bodySmall)),
+                    ],
+                    onChanged: (v) => setState(() => _ttsEngine = v ?? 'system'),
+                  ),
                 ),
                 if (_ttsEngine == 'local') ...[
-                  const SizedBox(height: 8),
-                  DropdownButtonFormField<int>(
-                    initialValue: _ttsSid,
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: '音色', isDense: true),
-                    items: LocalTtsImpl.voices.entries
-                        .map((e) => DropdownMenuItem(
-                              value: e.key,
-                              child: Text(e.value, style: const TextStyle(fontSize: 13)),
-                            ))
-                        .toList(),
-                    onChanged: (v) => setState(() => _ttsSid = v ?? 47),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.only(left: 4),
-                    child: Row(
-                      children: [
-                        const Text('语速：', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                        Expanded(
-                          child: Slider(
-                            value: _ttsSpeed,
-                            min: 0.6,
-                            max: 1.5,
-                            divisions: 18,
-                            label: _ttsSpeed.toStringAsFixed(2),
-                            onChanged: (v) => setState(() => _ttsSpeed = v),
-                          ),
-                        ),
-                        Text(_ttsSpeed.toStringAsFixed(2), style: const TextStyle(fontSize: 12)),
-                      ],
+                  const SizedBox(height: 12),
+                  SettingsRow(
+                    label: '音色',
+                    child: DropdownButtonFormField<int>(
+                      initialValue: _ttsSid,
+                      isExpanded: true,
+                      items: LocalTtsImpl.voices.entries
+                          .map((e) => DropdownMenuItem(
+                                value: e.key,
+                                child: Text(e.value, style: AppType.bodySmall),
+                              ))
+                          .toList(),
+                      onChanged: (v) => setState(() => _ttsSid = v ?? 47),
                     ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Text('语速：', style: AppType.caption.copyWith(color: AppPalette.text3)),
+                      Expanded(
+                        child: Slider(
+                          value: _ttsSpeed,
+                          min: 0.6,
+                          max: 1.5,
+                          divisions: 18,
+                          label: _ttsSpeed.toStringAsFixed(2),
+                          onChanged: (v) => setState(() => _ttsSpeed = v),
+                        ),
+                      ),
+                      Text(_ttsSpeed.toStringAsFixed(2), style: AppType.caption.copyWith(color: AppPalette.text2)),
+                    ],
                   ),
                   Align(
                     alignment: Alignment.centerLeft,
@@ -2320,110 +2329,142 @@ class _SettingsPageState extends State<SettingsPage> {
                       label: Text(_ttsModelReady ? '模型已就绪（点击重新下载）' : '下载语音模型（约 147 MB）'),
                     ),
                   ),
+                  if (_downloadingTts) ...[
+                    const SizedBox(height: 4),
+                    LinearProgressIndicator(value: _ttsProgress),
+                    const SizedBox(height: 4),
+                    Text('${(_ttsProgress * 100).round()}%', style: AppType.caption.copyWith(color: AppPalette.text2)),
+                  ],
                 ],
               ],
               const SizedBox(height: 14),
               const SectionHeader(label: '语音识别'),
               const SizedBox(height: 14),
-              const _Label('语音识别服务（录音后上传这里转文字，不用手机自带识别）'),
-              DropdownButtonFormField<String>(
-                initialValue: _asrPreset,
-                isExpanded: true,
-                items: kAsrPresets
-                    .map((p) => DropdownMenuItem(
-                          value: p.id,
-                          child: Text(p.name, style: const TextStyle(fontSize: 13)),
-                        ))
-                    .toList(),
-                onChanged: (id) {
-                  if (id == null) return;
-                  final p = asrById(id);
-                  setState(() {
-                    _asrPreset = id;
-                    if (p.baseUrl.isNotEmpty) _asrBase.text = p.baseUrl;
-                    if (p.models.isNotEmpty) _asr.text = p.models.first;
-                  });
-                },
-              ),
-              if (_asrPreset == 'local') ...[
-                const SizedBox(height: 8),
-                DropdownButtonFormField<String>(
-                  initialValue: _asrLocalModel,
+              SettingsRow(
+                label: '语音识别服务',
+                description: '录音后上传这里转文字，不用手机自带识别',
+                child: DropdownButtonFormField<String>(
+                  initialValue: _asrPreset,
                   isExpanded: true,
-                  decoration: const InputDecoration(labelText: '离线模型', isDense: true),
-                  items: LocalAsrImpl.models.entries
-                      .map((e) => DropdownMenuItem(
-                            value: e.key,
-                            child: Text(e.value, style: const TextStyle(fontSize: 13)),
-                          ))
-                      .toList(),
-                  onChanged: (v) => setState(() => _asrLocalModel = v ?? 'dolphin'),
-                ),
-              ],
-              if (_asrPreset != 'same' && _asrPreset != 'local') ...[
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _asrBase,
-                  decoration: const InputDecoration(hintText: 'Base URL，例如 https://api.siliconflow.cn/v1', isDense: true),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _asrKey,
-                  obscureText: true,
-                  decoration: const InputDecoration(hintText: '语音服务 API Key', isDense: true),
-                ),
-              ],
-              const SizedBox(height: 8),
-              TextField(
-                controller: _asr,
-                decoration: const InputDecoration(hintText: '转写模型，例如 FunAudioLLM/SenseVoiceSmall', isDense: true),
-              ),
-              const SizedBox(height: 14),
-              const SectionHeader(label: '看图模型'),
-              const SizedBox(height: 14),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                value: _visionEnabled,
-                onChanged: (v) => setState(() => _visionEnabled = v),
-                title: const Text('发图时切到看图模型'),
-                subtitle: const Text('聊天模型不支持看图时，带图的这一条自动走另一个模型；其余消息仍用原模型'),
-              ),
-              if (_visionEnabled) ...[
-                DropdownButtonFormField<String>(
-                  initialValue: _visionProvider,
-                  isExpanded: true,
-                  items: kProviders
-                      .where((p) => p.id != 'custom')
+                  items: kAsrPresets
                       .map((p) => DropdownMenuItem(
                             value: p.id,
-                            child: Text(p.name, style: const TextStyle(fontSize: 13)),
+                            child: Text(p.name, style: AppType.bodySmall),
                           ))
                       .toList(),
                   onChanged: (id) {
                     if (id == null) return;
-                    final p = providerById(id);
+                    final p = asrById(id);
                     setState(() {
-                      _visionProvider = id;
-                      if (p.baseUrl.isNotEmpty) _visionBase.text = p.baseUrl;
-                      if (p.models.isNotEmpty) _visionModel.text = p.models.last.contains('vl') || p.models.last.contains('glm') ? p.models.last : p.models.first;
+                      _asrPreset = id;
+                      if (p.baseUrl.isNotEmpty) _asrBase.text = p.baseUrl;
+                      if (p.models.isNotEmpty) _asr.text = p.models.first;
                     });
                   },
                 ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _visionBase,
-                  decoration: const InputDecoration(hintText: 'Base URL', isDense: true),
+              ),
+              if (_asrPreset == 'local') ...[
+                const SizedBox(height: 12),
+                SettingsRow(
+                  label: '离线模型',
+                  child: DropdownButtonFormField<String>(
+                    initialValue: _asrLocalModel,
+                    isExpanded: true,
+                    items: LocalAsrImpl.models.entries
+                        .map((e) => DropdownMenuItem(
+                              value: e.key,
+                              child: Text(e.value, style: AppType.bodySmall),
+                            ))
+                        .toList(),
+                    onChanged: (v) => setState(() => _asrLocalModel = v ?? 'dolphin'),
+                  ),
                 ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _visionKey,
-                  obscureText: true,
-                  decoration: const InputDecoration(hintText: '看图服务 API Key（留空则用聊天厂商的 Key）', isDense: true),
+              ],
+              if (_asrPreset != 'same' && _asrPreset != 'local') ...[
+                const SizedBox(height: 12),
+                SettingsRow(
+                  label: 'Base URL',
+                  child: TextField(
+                    controller: _asrBase,
+                    decoration: const InputDecoration(hintText: 'Base URL，例如 https://api.siliconflow.cn/v1', isDense: true),
+                  ),
                 ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _visionModel,
-                  decoration: const InputDecoration(hintText: '看图模型，例如 qwen-vl-max / glm-4.5 / kimi-k3', isDense: true),
+                const SizedBox(height: 12),
+                SettingsRow(
+                  label: 'API Key',
+                  child: TextField(
+                    controller: _asrKey,
+                    obscureText: true,
+                    decoration: const InputDecoration(hintText: '语音服务 API Key', isDense: true),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+              SettingsRow(
+                label: '转写模型',
+                child: TextField(
+                  controller: _asr,
+                  decoration: const InputDecoration(hintText: '转写模型，例如 FunAudioLLM/SenseVoiceSmall', isDense: true),
+                ),
+              ),
+              const SizedBox(height: 14),
+              const SectionHeader(label: '看图模型'),
+              const SizedBox(height: 14),
+              _SettingsSwitch(
+                title: '发图时切到看图模型',
+                subtitle: '聊天模型不支持看图时，带图的这一条自动走另一个模型；其余消息仍用原模型',
+                value: _visionEnabled,
+                onChanged: (v) => setState(() => _visionEnabled = v),
+              ),
+              if (_visionEnabled) ...[
+                const SizedBox(height: 14),
+                SettingsRow(
+                  label: '厂商',
+                  child: DropdownButtonFormField<String>(
+                    initialValue: _visionProvider,
+                    isExpanded: true,
+                    items: kProviders
+                        .where((p) => p.id != 'custom')
+                        .map((p) => DropdownMenuItem(
+                              value: p.id,
+                              child: Text(p.name, style: AppType.bodySmall),
+                            ))
+                        .toList(),
+                    onChanged: (id) {
+                      if (id == null) return;
+                      final p = providerById(id);
+                      setState(() {
+                        _visionProvider = id;
+                        if (p.baseUrl.isNotEmpty) _visionBase.text = p.baseUrl;
+                        if (p.models.isNotEmpty) _visionModel.text = p.models.last.contains('vl') || p.models.last.contains('glm') ? p.models.last : p.models.first;
+                      });
+                    },
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SettingsRow(
+                  label: 'Base URL',
+                  child: TextField(
+                    controller: _visionBase,
+                    decoration: const InputDecoration(hintText: 'Base URL', isDense: true),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SettingsRow(
+                  label: 'API Key',
+                  child: TextField(
+                    controller: _visionKey,
+                    obscureText: true,
+                    decoration: const InputDecoration(hintText: '看图服务 API Key（留空则用聊天厂商的 Key）', isDense: true),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SettingsRow(
+                  label: '看图模型',
+                  child: TextField(
+                    controller: _visionModel,
+                    decoration: const InputDecoration(hintText: '看图模型，例如 qwen-vl-max / glm-4.5 / kimi-k3', isDense: true),
+                  ),
                 ),
               ],
             ],
@@ -2667,6 +2708,43 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SettingsSwitch extends StatelessWidget {
+  const _SettingsSwitch({
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: AppType.bodySmall.copyWith(color: AppPalette.text1)),
+                const SizedBox(height: AppSpacing.xs),
+                Text(subtitle, style: AppType.caption.copyWith(color: AppPalette.text3)),
+              ],
+            ),
+          ),
+        ),
+        Switch(value: value, onChanged: onChanged),
+      ],
     );
   }
 }
