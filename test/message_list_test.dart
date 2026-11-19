@@ -15,6 +15,8 @@ void main() {
       Message('user', '嗨'),
       Message('assistant', '在的'),
     ];
+    final ScrollController controller = ScrollController();
+    addTearDown(controller.dispose);
 
     await tester.pumpWidget(
       MaterialApp(
@@ -41,6 +43,7 @@ void main() {
             busy: false,
             waitingFirstToken: false,
             onOpenImage: (_) {},
+            controller: controller,
           ),
         ),
       ),
@@ -50,6 +53,8 @@ void main() {
     final ListView list = tester.widget<ListView>(find.byType(ListView));
     final EdgeInsets padding = list.padding! as EdgeInsets;
     expect(padding.top, 92);
+    expect(list.controller, controller);
+    expect(controller.hasClients, isTrue);
     expect(find.byType(MessageBubble), findsNWidgets(3));
     expect(tester.takeException(), isNull);
   });

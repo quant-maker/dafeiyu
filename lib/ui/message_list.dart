@@ -17,6 +17,7 @@ class MessageList extends StatelessWidget {
     required this.waitingFirstToken,
     required this.onOpenImage,
     this.padding,
+    this.controller,
   });
 
   final List<Message> messages;
@@ -24,6 +25,7 @@ class MessageList extends StatelessWidget {
   final bool waitingFirstToken;
   final void Function(String) onOpenImage;
   final EdgeInsets? padding;
+  final ScrollController? controller;
 
   @override
   Widget build(BuildContext context) {
@@ -37,6 +39,7 @@ class MessageList extends StatelessWidget {
         );
 
     return ListView.builder(
+      controller: controller,
       padding: effectivePadding,
       itemCount: messages.length,
       itemBuilder: (BuildContext context, int i) {

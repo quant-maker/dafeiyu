@@ -1840,6 +1840,7 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
       busy: _busy,
       waitingFirstToken: _waitingFirstToken,
       onOpenImage: _openImage,
+      controller: _scroll,
     );
   }
 
