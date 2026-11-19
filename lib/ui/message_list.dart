@@ -84,6 +84,36 @@ class MessageList extends StatelessWidget {
                   fit: BoxFit.contain,
                 ),
               );
+        final bool isLast = i == messages.length - 1;
+        final bool showCaret =
+            isLast && busy && !waitingFirstToken && m.role == 'assistant';
+
+        Widget bubble = MessageBubble(
+          content: m.content,
+          mine: mine,
+          showName: showName,
+          image: image,
+          typing: typing,
+          trailing: showCaret ? const StreamingCaret() : null,
+        );
+        if (isLast) {
+          bubble = TweenAnimationBuilder<double>(
+            key: ValueKey<Message>(messages.last),
+            tween: Tween<double>(begin: .6, end: 1),
+            duration: AppDurations.entrance,
+            curve: Curves.easeOutCubic,
+            builder: (BuildContext context, double v, Widget? child) {
+              return Opacity(
+                opacity: v,
+                child: Transform.translate(
+                  offset: Offset(0, 6 * (1 - v)),
+                  child: child,
+                ),
+              );
+            },
+            child: bubble,
+          );
+        }
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -101,13 +131,7 @@ class MessageList extends StatelessWidget {
               ),
             Padding(
               padding: EdgeInsets.only(top: gap),
-              child: MessageBubble(
-                content: m.content,
-                mine: mine,
-                showName: showName,
-                image: image,
-                typing: typing,
-              ),
+              child: bubble,
             ),
           ],
         );

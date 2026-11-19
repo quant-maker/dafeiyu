@@ -147,6 +147,55 @@ class MessageBubble extends StatelessWidget {
   }
 }
 
+/// A thin blinking warm bar that follows the text while she is streaming.
+class StreamingCaret extends StatefulWidget {
+  const StreamingCaret({super.key});
+
+  @override
+  State<StreamingCaret> createState() => _StreamingCaretState();
+}
+
+class _StreamingCaretState extends State<StreamingCaret>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _opacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+    _opacity = Tween<double>(begin: 1, end: .2).animate(_controller);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _opacity,
+      child: Padding(
+        padding: const EdgeInsets.only(left: 3, bottom: 3),
+        child: Container(
+          key: const Key('streaming-caret'),
+          width: 2,
+          height: 16,
+          decoration: BoxDecoration(
+            color: AppPalette.warm,
+            borderRadius: BorderRadius.circular(1),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Three slowly pulsing dots that signal "she is typing".
 class TypingDots extends StatefulWidget {
   const TypingDots({

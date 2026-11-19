@@ -91,7 +91,10 @@ class ChatAppBar extends StatelessWidget implements PreferredSizeWidget {
                     ),
                   ),
                   const SizedBox(width: AppSpacing.s),
-                  StatusDot(color: _moodColor()),
+                  StatusDot(
+                    color: _moodColor(),
+                    pulse: mood == SceneMood.thinking,
+                  ),
                 ],
               ),
             ),

@@ -96,25 +96,58 @@ class Composer extends StatelessWidget {
                           color: AppPalette.danger,
                           onPressed: onStop,
                         )
-                      : Container(
-                          width: 42,
-                          height: 42,
-                          decoration: const BoxDecoration(
-                            shape: BoxShape.circle,
-                            gradient: AppGradients.send,
-                          ),
-                          child: IconButton(
-                            tooltip: '发送',
-                            onPressed: onSend,
-                            icon: const Icon(
-                              Icons.arrow_upward,
-                              size: 20,
-                              color: AppPalette.primaryInk,
-                            ),
-                          ),
-                        ),
+                      : _PressableSend(onSend: onSend),
                 ],
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The 42px gradient send button with a subtle press-in feedback.
+class _PressableSend extends StatefulWidget {
+  const _PressableSend({required this.onSend});
+
+  final VoidCallback onSend;
+
+  @override
+  State<_PressableSend> createState() => _PressableSendState();
+}
+
+class _PressableSendState extends State<_PressableSend> {
+  bool _pressed = false;
+
+  void _setPressed(bool value) {
+    if (_pressed != value) setState(() => _pressed = value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) => _setPressed(true),
+      onTapCancel: () => _setPressed(false),
+      onTapUp: (_) => _setPressed(false),
+      onTap: widget.onSend,
+      child: AnimatedScale(
+        scale: _pressed ? .96 : 1,
+        duration: const Duration(milliseconds: 120),
+        child: Tooltip(
+          message: '发送',
+          child: Container(
+            width: 42,
+            height: 42,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: AppGradients.send,
+            ),
+            child: const Icon(
+              Icons.arrow_upward,
+              size: 20,
+              color: AppPalette.primaryInk,
             ),
           ),
         ),

@@ -26,6 +26,7 @@ import 'ui/message_list.dart';
 import 'ui/scrim.dart';
 import 'ui/surfaces.dart';
 import 'ui/theme.dart';
+import 'ui/tokens.dart';
 import 'scene/scene_stage.dart';
 import 'voice/local_asr_web.dart' if (dart.library.io) 'voice/local_asr_io.dart';
 import 'voice/local_tts_web.dart' if (dart.library.io) 'voice/local_tts_io.dart';
@@ -426,10 +427,12 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
   static const _charsPerSecond = 46.0;
   Timer? _idleTimer;
   int _proactiveCount = 0;
+  bool _showJump = false;
 
   @override
   void initState() {
     super.initState();
+    _scroll.addListener(_onScroll);
     Settings.load().then((s) {
       debugPrint('[feiyu] settings loaded base=${s.baseUrl} model=${s.model} keyLen=${s.apiKey.length}');
       if (mounted) {
@@ -484,8 +487,16 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
     _client?.close();
     _idleTimer?.cancel();
     _input.dispose();
+    _scroll.removeListener(_onScroll);
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _onScroll() {
+    if (!mounted) return;
+    final show = _scroll.hasClients &&
+        _scroll.offset < _scroll.position.maxScrollExtent - 240;
+    if (show != _showJump) setState(() => _showJump = show);
   }
 
   void _scrollToEnd({bool animate = true}) {
@@ -1764,6 +1775,39 @@ class _ChatPageState extends State<ChatPage> with SingleTickerProviderStateMixin
                   if (_listening) _listeningBar(),
                   _composer(),
                 ],
+              ),
+            ),
+            Positioned(
+              right: 12,
+              bottom: 8,
+              child: IgnorePointer(
+                ignoring: !_showJump,
+                child: AnimatedOpacity(
+                  opacity: _showJump ? 1 : 0,
+                  duration: AppDurations.base,
+                  child: SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: Material(
+                      color: AppPalette.surfaceHi,
+                      shape: const CircleBorder(),
+                      child: IconButton(
+                        tooltip: '回到底部',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 40,
+                          height: 40,
+                        ),
+                        onPressed: _scrollToEnd,
+                        icon: const Icon(
+                          Icons.arrow_downward,
+                          size: 18,
+                          color: AppPalette.text1,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
           ],
