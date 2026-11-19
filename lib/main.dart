@@ -2134,51 +2134,58 @@ class _SettingsPageState extends State<SettingsPage> {
             key: const ValueKey('settings-section-model'),
             title: '模型',
             children: <Widget>[
-              const _Label('厂商'),
-              DropdownButtonFormField<String>(
-                initialValue: _provider,
-                isExpanded: true,
-                items: kProviders
-                    .map((p) => DropdownMenuItem(
-                          value: p.id,
-                          child: Text('${p.name}${p.note.isEmpty ? '' : '  ·  ${p.note}'}',
-                              overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
-                        ))
-                    .toList(),
-                onChanged: (id) {
-                  if (id == null) return;
-                  final preset = providerById(id);
-                  setState(() {
-                    _keys[_provider] = _key.text.trim();
-                    _provider = id;
-                    if (preset.baseUrl.isNotEmpty) _base.text = preset.baseUrl;
-                    if (preset.models.isNotEmpty) _model.text = preset.models.first;
-                    _key.text = _keys[id] ?? '';
-                    _models = const [];
-                  });
-                  if (_key.text.trim().isNotEmpty) _loadModels();
-                },
+              SettingsRow(
+                label: '厂商',
+                child: DropdownButtonFormField<String>(
+                  initialValue: _provider,
+                  isExpanded: true,
+                  items: kProviders
+                      .map((p) => DropdownMenuItem(
+                            value: p.id,
+                            child: Text('${p.name}${p.note.isEmpty ? '' : '  ·  ${p.note}'}',
+                                overflow: TextOverflow.ellipsis, style: AppType.bodySmall),
+                          ))
+                      .toList(),
+                  onChanged: (id) {
+                    if (id == null) return;
+                    final preset = providerById(id);
+                    setState(() {
+                      _keys[_provider] = _key.text.trim();
+                      _provider = id;
+                      if (preset.baseUrl.isNotEmpty) _base.text = preset.baseUrl;
+                      if (preset.models.isNotEmpty) _model.text = preset.models.first;
+                      _key.text = _keys[id] ?? '';
+                      _models = const [];
+                    });
+                    if (_key.text.trim().isNotEmpty) _loadModels();
+                  },
+                ),
               ),
               const SizedBox(height: 14),
-              const _Label('Base URL（OpenAI 兼容，不带 /chat/completions）'),
-              TextField(controller: _base, decoration: const InputDecoration(hintText: 'https://…/v1')),
+              SettingsRow(
+                label: 'Base URL',
+                description: 'OpenAI 兼容，不带 /chat/completions',
+                child: TextField(controller: _base, decoration: const InputDecoration(hintText: 'https://…/v1')),
+              ),
               const SizedBox(height: 14),
-              const _Label('API Key'),
-              TextField(
-                controller: _key,
-                obscureText: true,
-                onSubmitted: (_) => _loadModels(),
-                onEditingComplete: () {
-                  if (_key.text.trim().isNotEmpty && _models.isEmpty) _loadModels();
-                },
-                decoration: InputDecoration(
-                  hintText: 'sk-…',
-                  suffixIcon: IconButton(
-                    onPressed: _loadModels,
-                    icon: _loadingModels
-                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.refresh, size: 18),
-                    tooltip: '刷新模型列表',
+              SettingsRow(
+                label: 'API Key',
+                child: TextField(
+                  controller: _key,
+                  obscureText: true,
+                  onSubmitted: (_) => _loadModels(),
+                  onEditingComplete: () {
+                    if (_key.text.trim().isNotEmpty && _models.isEmpty) _loadModels();
+                  },
+                  decoration: InputDecoration(
+                    hintText: 'sk-…',
+                    suffixIcon: IconButton(
+                      onPressed: _loadModels,
+                      icon: _loadingModels
+                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.refresh, size: 18),
+                      tooltip: '刷新模型列表',
+                    ),
                   ),
                 ),
               ),
@@ -2186,7 +2193,7 @@ class _SettingsPageState extends State<SettingsPage> {
               if (_modelError != null)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 6),
-                  child: Text('拉取模型失败：$_modelError', style: const TextStyle(fontSize: 11, color: Color(0xFFFF9A9A))),
+                  child: InlineNotice(tone: NoticeTone.danger, message: '拉取模型失败：$_modelError'),
                 ),
               Builder(builder: (context) {
                 final preset = providerById(_provider);
@@ -2194,42 +2201,47 @@ class _SettingsPageState extends State<SettingsPage> {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    DropdownButtonFormField<String>(
-                      initialValue: options.contains(_model.text) ? _model.text : null,
-                      isExpanded: true,
-                      decoration: InputDecoration(
-                        hintText: _models.isEmpty ? '先填 Key（会自动拉取）' : '选择模型',
-                        suffixIcon: _loadingModels
-                            ? const Padding(
-                                padding: EdgeInsets.all(12),
-                                child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
-                              )
-                            : null,
+                    SettingsRow(
+                      label: '模型',
+                      child: DropdownButtonFormField<String>(
+                        initialValue: options.contains(_model.text) ? _model.text : null,
+                        isExpanded: true,
+                        decoration: InputDecoration(
+                          hintText: _models.isEmpty ? '先填 Key（会自动拉取）' : '选择模型',
+                          suffixIcon: _loadingModels
+                              ? const Padding(
+                                  padding: EdgeInsets.all(12),
+                                  child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                                )
+                              : null,
+                        ),
+                        items: options
+                            .map((id) => DropdownMenuItem(
+                                  value: id,
+                                  child: Text(id, overflow: TextOverflow.ellipsis, style: AppType.bodySmall),
+                                ))
+                            .toList(),
+                        onChanged: (v) {
+                          if (v != null) setState(() => _model.text = v);
+                        },
                       ),
-                      items: options
-                          .map((id) => DropdownMenuItem(
-                                value: id,
-                                child: Text(id, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
-                              ))
-                          .toList(),
-                      onChanged: (v) {
-                        if (v != null) setState(() => _model.text = v);
-                      },
                     ),
                     if (_models.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(top: 6, left: 4),
-                        child: Text('已从该厂商拉取 ${_models.length} 个模型',
-                            style: const TextStyle(fontSize: 11, color: Color(0xFF7FD39A))),
+                        child: Pill(label: '已拉取 ${_models.length} 个模型', tone: PillTone.success),
                       ),
                   ],
                 );
               }),
               const SizedBox(height: 14),
-              TextField(
-                controller: _model,
-                decoration: const InputDecoration(hintText: '也可以手填模型名', isDense: true),
-                onChanged: (_) => setState(() {}),
+              SettingsRow(
+                label: '手动输入模型',
+                child: TextField(
+                  controller: _model,
+                  decoration: const InputDecoration(hintText: '也可以手填模型名', isDense: true),
+                  onChanged: (_) => setState(() {}),
+                ),
               ),
             ],
           ),
