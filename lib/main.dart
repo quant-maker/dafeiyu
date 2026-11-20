@@ -328,6 +328,17 @@ class _AsrUnavailable implements Exception {
   String toString() => '语音服务没有转写接口';
 }
 
+/// Sniffs the MIME type from the base64 payload so the data URI we send
+/// matches the actual bytes. `ImagePicker` returns PNG on several platforms
+/// even when `imageQuality` is set, and gateways reject a mislabelled image.
+String imageMimeFor(String base64Payload) {
+  if (base64Payload.startsWith('iVBORw0KGgo')) return 'image/png';
+  if (base64Payload.startsWith('/9j/')) return 'image/jpeg';
+  if (base64Payload.startsWith('R0lGOD')) return 'image/gif';
+  if (base64Payload.startsWith('UklGR')) return 'image/webp';
+  return 'image/jpeg';
+}
+
 class Message {
   final String role;
   String content;
@@ -341,7 +352,7 @@ class Message {
       'role': role,
       'content': [
         {'type': 'text', 'text': content},
-        {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,$imageBase64'}},
+        {'type': 'image_url', 'image_url': {'url': 'data:${imageMimeFor(imageBase64!)};base64,$imageBase64'}},
       ],
     };
   }
