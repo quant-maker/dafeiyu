@@ -44,9 +44,9 @@ class ChatAppBar extends StatelessWidget implements PreferredSizeWidget {
   Color _moodColor() {
     switch (mood) {
       case SceneMood.idle:
-        return AppPalette.mint;
-      case SceneMood.listening:
         return AppPalette.primary;
+      case SceneMood.listening:
+        return AppPalette.accent;
       case SceneMood.thinking:
         return AppPalette.warm;
       case SceneMood.speaking:
@@ -98,51 +98,87 @@ class ChatAppBar extends StatelessWidget implements PreferredSizeWidget {
                   StatusDot(
                     color: _moodColor(),
                     pulse: mood == SceneMood.thinking,
+                    glow: mood != SceneMood.away,
                   ),
                 ],
               ),
             ),
-            Container(
-              padding: const EdgeInsets.all(AppSpacing.xs),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: .05),
-                borderRadius: BorderRadius.circular(AppRadii.m),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  GhostIconButton(
-                    icon: Icons.photo_library_outlined,
-                    tooltip: '她的足迹',
-                    size: 36,
-                    onPressed: onFootprints,
-                  ),
-                  const SizedBox(width: 2),
-                  GhostIconButton(
-                    icon: Icons.brush_outlined,
-                    tooltip: '画画（ComfyUI）',
-                    size: 36,
-                    onPressed: onComfy,
-                  ),
-                  const SizedBox(width: 2),
-                  GhostIconButton(
-                    icon: Icons.auto_awesome_outlined,
-                    tooltip: '新会话',
-                    size: 36,
-                    onPressed: onNewChat,
-                  ),
-                  const SizedBox(width: 2),
-                  GhostIconButton(
-                    icon: Icons.tune,
-                    tooltip: '设置',
-                    size: 36,
-                    onPressed: onSettings,
-                  ),
-                ],
-              ),
+            // Accent (red) is reserved for transient states — recording,
+            // thinking, errors. Primary actions use gold.
+            _ActionIcon(
+              icon: Icons.auto_stories_outlined,
+              tooltip: '她的足迹',
+              onPressed: onFootprints,
+            ),
+            const SizedBox(width: 4),
+            _ActionIcon(
+              icon: Icons.draw_rounded,
+              tooltip: '画画（ComfyUI）',
+              onPressed: onComfy,
+            ),
+            const SizedBox(width: 4),
+            _ActionIcon(
+              icon: Icons.add_rounded,
+              tooltip: '新会话',
+              onPressed: onNewChat,
+              accent: true,
+            ),
+            const SizedBox(width: 4),
+            _ActionIcon(
+              icon: Icons.settings_rounded,
+              tooltip: '设置',
+              onPressed: onSettings,
             ),
             const SizedBox(width: AppSpacing.l),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A 36px circular header action. [accent] marks the single gold-tinted
+/// primary action; the rest stay ghost so the cluster reads quietly.
+class _ActionIcon extends StatelessWidget {
+  const _ActionIcon({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+    this.accent = false,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+  final bool accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: Icon(
+        icon,
+        size: 19,
+        color: accent ? AppPalette.primary : AppPalette.text2,
+      ),
+      style: IconButton.styleFrom(
+        fixedSize: const Size(36, 36),
+        minimumSize: const Size(36, 36),
+        padding: EdgeInsets.zero,
+        backgroundColor: accent
+            ? AppPalette.primary.withValues(alpha: .16)
+            : Colors.white.withValues(alpha: .05),
+        hoverColor: Colors.white.withValues(alpha: .12),
+        highlightColor: Colors.white.withValues(alpha: .16),
+        shape: const CircleBorder(),
+      ).copyWith(
+        side: WidgetStatePropertyAll<BorderSide>(
+          BorderSide(
+            color: accent
+                ? AppPalette.primary.withValues(alpha: .38)
+                : Colors.white.withValues(alpha: .08),
+          ),
         ),
       ),
     );

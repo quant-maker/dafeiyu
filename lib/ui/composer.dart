@@ -145,7 +145,7 @@ class _PressableSendState extends State<_PressableSend> {
               gradient: AppGradients.send,
             ),
             child: const Icon(
-              Icons.arrow_upward,
+              Icons.send_rounded,
               size: 20,
               color: AppPalette.primaryInk,
             ),
