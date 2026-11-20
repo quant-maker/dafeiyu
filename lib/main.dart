@@ -343,6 +343,47 @@ String imageMimeFor(String base64Payload) {
   return 'image/jpeg';
 }
 
+String _hexHead(List<int> b) {
+  final n = b.length < 8 ? b.length : 8;
+  final sb = StringBuffer();
+  for (var i = 0; i < n; i++) {
+    sb.write(b[i].toRadixString(16).padLeft(2, '0'));
+  }
+  return sb.toString();
+}
+
+String _mimeOfBytes(List<int> b) {
+  if (b.length >= 8 &&
+      b[0] == 0x89 &&
+      b[1] == 0x50 &&
+      b[2] == 0x4E &&
+      b[3] == 0x47 &&
+      b[4] == 0x0D &&
+      b[5] == 0x0A &&
+      b[6] == 0x1A &&
+      b[7] == 0x0A) {
+    return 'image/png';
+  }
+  if (b.length >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) {
+    return 'image/jpeg';
+  }
+  if (b.length >= 6 && b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x38) {
+    return 'image/gif';
+  }
+  if (b.length >= 12 &&
+      b[0] == 0x52 &&
+      b[1] == 0x49 &&
+      b[2] == 0x46 &&
+      b[3] == 0x46 &&
+      b[8] == 0x57 &&
+      b[9] == 0x45 &&
+      b[10] == 0x42 &&
+      b[11] == 0x50) {
+    return 'image/webp';
+  }
+  return 'unknown';
+}
+
 class Message {
   final String role;
   String content;
@@ -1058,6 +1099,7 @@ class _ChatPageState extends State<ChatPage> {
       final file = await ImagePicker().pickImage(source: source, maxWidth: 1280, imageQuality: 82);
       if (file == null) return;
       final bytes = await file.readAsBytes();
+      debugPrint('[feiyu] img pick name=${file.name} bytes=${bytes.length} magic=${_hexHead(bytes)} mime=${_mimeOfBytes(bytes)}');
       setState(() => _pendingImage = base64Encode(bytes));
     } catch (e) {
       setState(() => _error = '选图失败：$e');
@@ -1241,6 +1283,23 @@ class _ChatPageState extends State<ChatPage> {
     }
 
     final image = _pendingImage;
+    if (image != null) {
+      var decoded = const <int>[];
+      var decodedOk = true;
+      try {
+        decoded = base64Decode(image);
+      } catch (_) {
+        decodedOk = false;
+      }
+      final mime = _mimeOfBytes(decoded);
+      final valid = decodedOk && image.length % 4 == 0 && mime != 'unknown';
+      debugPrint(
+          '[feiyu] img send bytes=${image.length} mod4=${image.length % 4} magic=${_hexHead(decoded)} mime=${imageMimeFor(image)}');
+      if (!valid) {
+        setState(() => _error = '这张图好像坏了，换一张试试');
+        return;
+      }
+    }
     _input.clear();
     unawaited(_tts.stop());
     setState(() {
