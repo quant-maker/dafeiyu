@@ -2289,6 +2289,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _model;
   late final TextEditingController _persona;
   late bool _memoryEnabled;
+  late List<String> _facts;
   late bool _proactiveEnabled;
   late bool _sceneEnabled;
   late double _sceneDim;
@@ -2335,6 +2336,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _model = TextEditingController(text: widget.initial.model);
     _persona = TextEditingController(text: widget.initial.persona);
     _memoryEnabled = widget.initial.memoryEnabled;
+    _facts = List.of(widget.memory.facts);
     _proactiveEnabled = widget.initial.proactiveEnabled;
     _sceneEnabled = widget.initial.sceneEnabled;
     _sceneDim = widget.initial.sceneDim;
@@ -2599,6 +2601,81 @@ class _SettingsPageState extends State<SettingsPage> {
     await _persist();
   }
 
+  void _showMemoryCapMessage() {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(content: Text('最多记 24 条，先删一条吧')));
+  }
+
+  Future<String?> _promptFact({String initial = ''}) async {
+    final ctrl = TextEditingController(text: initial);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(initial.isEmpty ? '添加一条记忆' : '编辑这条记忆'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          maxLines: 3,
+          decoration: const InputDecoration(hintText: '比如：你最喜欢雨天'),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () {
+              final t = ctrl.text.trim();
+              if (t.isEmpty) return;
+              Navigator.of(ctx).pop(t);
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    return result;
+  }
+
+  Future<void> _editFact(int index) async {
+    final result = await _promptFact(initial: _facts[index]);
+    if (!mounted || result == null || result.isEmpty) return;
+    _facts[index] = result;
+    widget.memory.facts[index] = result;
+    await widget.memory.save();
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  Future<void> _addFact() async {
+    if (_facts.length >= 24) {
+      _showMemoryCapMessage();
+      return;
+    }
+    final result = await _promptFact();
+    if (!mounted || result == null || result.isEmpty) return;
+    if (_facts.length >= 24) {
+      _showMemoryCapMessage();
+      return;
+    }
+    _facts.add(result);
+    widget.memory.facts.add(result);
+    await widget.memory.save();
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  Future<void> _deleteFact(int index) async {
+    _facts.removeAt(index);
+    widget.memory.facts.removeAt(index);
+    setState(() {});
+    await widget.memory.save();
+    if (!mounted) return;
+    setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -2735,27 +2812,36 @@ class _SettingsPageState extends State<SettingsPage> {
             key: const ValueKey('settings-section-avatar'),
             title: '头像',
             children: <Widget>[
-              _AvatarSettingsBlock(
-                title: '大肥鱼',
-                subtitle: '聊天和足迹里都会用它。',
-                imageBase64: _avatar,
-                error: _avatarError,
-                onPick: _pickAvatar,
-                onReset: _avatar == null ? null : _resetAvatar,
-                onDismissError: () => setState(() => _avatarError = null),
-              ),
-              const SizedBox(height: AppSpacing.l),
-              _AvatarSettingsBlock(
-                title: '你',
-                subtitle: '显示在你的每条消息旁边。',
-                imageBase64: _userAvatar,
-                error: _userAvatarError,
-                onPick: _pickUserAvatar,
-                onReset: _userAvatar == null ? null : _resetUserAvatar,
-                onDismissError: () =>
-                    setState(() => _userAvatarError = null),
-                pickKey: const ValueKey('settings-avatar-self'),
-                useNeutralFallback: true,
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Expanded(
+                    child: _AvatarSettingsBlock(
+                      title: '大肥鱼',
+                      subtitle: '聊天和足迹里都会用它。',
+                      imageBase64: _avatar,
+                      error: _avatarError,
+                      onPick: _pickAvatar,
+                      onReset: _avatar == null ? null : _resetAvatar,
+                      onDismissError: () => setState(() => _avatarError = null),
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.l),
+                  Expanded(
+                    child: _AvatarSettingsBlock(
+                      title: '你',
+                      subtitle: '显示在你的每条消息旁边。',
+                      imageBase64: _userAvatar,
+                      error: _userAvatarError,
+                      onPick: _pickUserAvatar,
+                      onReset: _userAvatar == null ? null : _resetUserAvatar,
+                      onDismissError: () =>
+                          setState(() => _userAvatarError = null),
+                      pickKey: const ValueKey('settings-avatar-self'),
+                      useNeutralFallback: true,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -2991,33 +3077,58 @@ class _SettingsPageState extends State<SettingsPage> {
                 onChanged: (v) => setState(() => _memoryEnabled = v),
               ),
               const SizedBox(height: 14),
-              Text('现在记得 ${widget.memory.facts.length} 条', style: AppType.caption.copyWith(color: AppPalette.text2)),
+              Text('现在记得 ${_facts.length} 条', style: AppType.caption.copyWith(color: AppPalette.text2)),
               const SizedBox(height: 6),
-              ...widget.memory.facts.map((f) => Padding(
+              if (_facts.isEmpty)
+                Text('还没有记住任何事', style: AppType.caption.copyWith(color: AppPalette.text3))
+              else
+                ...List<Widget>.generate(_facts.length, (i) {
+                  final fact = _facts[i];
+                  return Padding(
                     padding: const EdgeInsets.symmetric(vertical: 2),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
-                        Padding(
-                          padding: const EdgeInsets.only(top: 6),
-                          child: Container(
-                            width: 6,
-                            height: 6,
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: AppPalette.primary,
-                            ),
+                        Expanded(
+                          child: Text(
+                            fact,
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppType.bodySmall.copyWith(color: AppPalette.text2),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(f, style: AppType.bodySmall.copyWith(color: AppPalette.text2)),
+                        const SizedBox(width: AppSpacing.xs),
+                        IconButton(
+                          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+                          padding: EdgeInsets.zero,
+                          visualDensity: VisualDensity.compact,
+                          iconSize: 18,
+                          tooltip: '编辑这条记忆',
+                          onPressed: () => _editFact(i),
+                          icon: const Icon(Icons.edit_outlined),
+                        ),
+                        IconButton(
+                          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+                          padding: EdgeInsets.zero,
+                          visualDensity: VisualDensity.compact,
+                          iconSize: 18,
+                          tooltip: '删除这条记忆',
+                          onPressed: () => _deleteFact(i),
+                          icon: const Icon(Icons.delete_outline),
                         ),
                       ],
                     ),
-                  )),
-              if (widget.memory.facts.isEmpty)
-                Text('（还没有记忆，多聊几轮就会出现）', style: AppType.caption.copyWith(color: AppPalette.text3)),
+                  );
+                }),
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: _addFact,
+                  icon: const Icon(Icons.add, size: 16),
+                  label: const Text('添加一条记忆'),
+                ),
+              ),
               const SizedBox(height: 14),
               _SettingsSwitch(
                 title: '主动开口',
@@ -3261,8 +3372,8 @@ class _AvatarSettingsBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     final Widget preview = (useNeutralFallback && imageBase64 == null)
         ? Container(
-            width: 64,
-            height: 64,
+            width: 56,
+            height: 56,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: AppPalette.surfaceHi,
@@ -3270,56 +3381,58 @@ class _AvatarSettingsBlock extends StatelessWidget {
             ),
             child: const Icon(
               Icons.person_outline,
-              size: 28,
+              size: 26,
               color: AppPalette.text3,
             ),
           )
-        : AvatarMark(size: 64, imageBase64: imageBase64);
+        : AvatarMark(size: 56, imageBase64: imageBase64);
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: <Widget>[
-        Row(
-          children: <Widget>[
-            preview,
-            const SizedBox(width: AppSpacing.l),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(
-                    title,
-                    style: AppType.bodySmall.copyWith(color: AppPalette.text1),
-                  ),
-                  const SizedBox(height: AppSpacing.xs),
-                  Text(
-                    subtitle,
-                    style: AppType.caption.copyWith(color: AppPalette.text3),
-                  ),
-                ],
-              ),
-            ),
-          ],
+        preview,
+        const SizedBox(height: AppSpacing.s),
+        Text(
+          title,
+          textAlign: TextAlign.center,
+          style: AppType.subtitle.copyWith(color: AppPalette.text1),
         ),
-        if (error != null) ...[
-          const SizedBox(height: AppSpacing.m),
-          InlineNotice(message: error!, onDismiss: onDismissError),
-        ],
-        const SizedBox(height: AppSpacing.m),
-        Row(
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          subtitle,
+          textAlign: TextAlign.center,
+          style: AppType.caption.copyWith(color: AppPalette.text3),
+        ),
+        const SizedBox(height: AppSpacing.s),
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: AppSpacing.xs,
+          runSpacing: 0,
           children: <Widget>[
-            PrimaryButton(
+            TextButton(
               key: pickKey,
-              label: '从相册选择',
-              icon: Icons.photo_library_outlined,
               onPressed: onPick,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s),
+                minimumSize: const Size(0, 34),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('从相册选择'),
             ),
-            const SizedBox(width: AppSpacing.m),
             TextButton(
               onPressed: onReset,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s),
+                minimumSize: const Size(0, 34),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
               child: const Text('恢复默认'),
             ),
           ],
         ),
+        if (error != null) ...[
+          const SizedBox(height: AppSpacing.s),
+          InlineNotice(message: error!, onDismiss: onDismissError),
+        ],
       ],
     );
   }
