@@ -20,7 +20,12 @@ class LocalTtsImpl {
     throw UnsupportedError('浏览器里没有端侧语音合成');
   }
 
-  Future<bool> speak(String text, {int sid = 47, double speed = 1.0}) async => false;
+  Future<bool> speak(
+    String text, {
+    int sid = 47,
+    double speed = 1.0,
+    bool awaitCompletion = false,
+  }) async => false;
 
   Future<void> stop() async {}
 }

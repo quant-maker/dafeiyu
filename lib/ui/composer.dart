@@ -20,6 +20,9 @@ class Composer extends StatelessWidget {
     required this.onStop,
     required this.onSubmitted,
     this.hint = '和大肥鱼说点什么…',
+    this.inCall = false,
+    this.onCall,
+    this.onHangup,
   });
 
   final TextEditingController controller;
@@ -31,6 +34,11 @@ class Composer extends StatelessWidget {
   final VoidCallback onStop;
   final ValueChanged<String>? onSubmitted;
   final String hint;
+
+  /// True while the hands-free call loop is running.
+  final bool inCall;
+  final VoidCallback? onCall;
+  final VoidCallback? onHangup;
 
   @override
   Widget build(BuildContext context) {
@@ -82,6 +90,13 @@ class Composer extends StatelessWidget {
                       ),
                     ),
                   ),
+                  if (!inCall)
+                    GhostIconButton(
+                      icon: Icons.call_outlined,
+                      tooltip: '打电话',
+                      size: 36,
+                      onPressed: busy ? null : onCall,
+                    ),
                   GhostIconButton(
                     icon: listening
                         ? Icons.stop_circle_outlined
@@ -90,18 +105,54 @@ class Composer extends StatelessWidget {
                     color: listening ? AppPalette.primary : null,
                     onPressed: busy ? null : onMic,
                   ),
-                  busy
-                      ? GhostIconButton(
-                          icon: Icons.stop_circle,
-                          tooltip: '停止生成',
-                          color: AppPalette.danger,
-                          onPressed: onStop,
-                        )
-                      : _PressableSend(onSend: onSend),
+                  if (inCall)
+                    _HangupButton(onHangup: onHangup)
+                  else if (busy)
+                    GhostIconButton(
+                      icon: Icons.stop_circle,
+                      tooltip: '停止生成',
+                      color: AppPalette.danger,
+                      onPressed: onStop,
+                    )
+                  else
+                    _PressableSend(onSend: onSend),
                 ],
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The 42px red hang-up button shown while in a call.
+class _HangupButton extends StatelessWidget {
+  const _HangupButton({required this.onHangup});
+
+  final VoidCallback? onHangup;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 42,
+      height: 42,
+      child: IconButton(
+        tooltip: '挂断',
+        onPressed: onHangup,
+        padding: EdgeInsets.zero,
+        style: IconButton.styleFrom(
+          fixedSize: const Size(42, 42),
+          minimumSize: const Size(42, 42),
+          backgroundColor: AppPalette.danger,
+          hoverColor: AppPalette.danger.withValues(alpha: .88),
+          highlightColor: AppPalette.danger.withValues(alpha: .78),
+          shape: const CircleBorder(),
+        ),
+        icon: const Icon(
+          Icons.call_end_rounded,
+          size: 20,
+          color: Colors.white,
         ),
       ),
     );

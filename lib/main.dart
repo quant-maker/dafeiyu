@@ -10,6 +10,8 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:speech_to_text/speech_recognition_error.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 
 import 'comfy/comfy.dart';
 import 'comfy/comfy_page.dart';
@@ -19,6 +21,7 @@ import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'ui/attachments.dart';
 import 'ui/avatar_mark.dart';
+import 'ui/call_banner.dart';
 import 'ui/chat_app_bar.dart';
 import 'ui/composer.dart';
 import 'ui/empty_state.dart';
@@ -30,6 +33,7 @@ import 'ui/surfaces.dart';
 import 'ui/theme.dart';
 import 'ui/tokens.dart';
 import 'scene/scene_stage.dart';
+import 'voice/call_flow.dart';
 import 'voice/local_asr_web.dart' if (dart.library.io) 'voice/local_asr_io.dart';
 import 'voice/local_tts_web.dart' if (dart.library.io) 'voice/local_tts_io.dart';
 
@@ -464,6 +468,12 @@ class _ChatPageState extends State<ChatPage> {
   List<Message> _messages = [];
   final AudioRecorder _recorder = AudioRecorder();
   final FlutterTts _tts = FlutterTts();
+  final SpeechToText _speech = SpeechToText();
+  LocalTtsImpl? _localTts;
+  bool _speechReady = false;
+  CallPhase _callPhase = CallPhase.off;
+  String _callErrorText = '';
+  bool get _inCall => _callPhase != CallPhase.off;
   bool _recording = false;
   String? _recordPath;
   Memory _memory = Memory();
@@ -551,6 +561,11 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    _callPhase = CallPhase.off;
+    unawaited(_speech.stop());
+    unawaited(_tts.stop());
+    final local = _localTts;
+    if (local != null) unawaited(local.stop());
     _client?.close();
     _idleTimer?.cancel();
     _input.dispose();
@@ -597,6 +612,7 @@ class _ChatPageState extends State<ChatPage> {
   // ---------------- voice ----------------
 
   Future<void> _toggleVoice() async {
+    if (_inCall) return;
     if (_recording) {
       await _finishRecording();
       return;
@@ -641,6 +657,195 @@ class _ChatPageState extends State<ChatPage> {
         _error = '录音启动失败：$e';
       });
     }
+  }
+
+  // ---------------- hands-free call mode ----------------
+
+  Future<void> _enterCall() async {
+    if (_inCall) return;
+    setState(() {
+      _callPhase = CallPhase.off;
+      _callErrorText = '';
+      _error = null;
+    });
+    try {
+      final ok = await _speech.initialize(
+        onError: _onSpeechError,
+        onStatus: _onSpeechStatus,
+      );
+      if (!mounted) return;
+      if (!ok) {
+        setState(() {
+          _callPhase = CallPhase.error;
+          _callErrorText = kIsWeb
+              ? '浏览器不支持语音识别（试试 Chrome）'
+              : '没有可用的语音识别（检查系统语音服务）';
+        });
+        return;
+      }
+      _speechReady = true;
+      final t = callNext(_callPhase, CallEvent.start);
+      setState(() {
+        _callPhase = t.phase;
+        _callErrorText = '';
+      });
+      await _startListening();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _callPhase = CallPhase.error;
+        _callErrorText = kIsWeb
+            ? '浏览器不支持语音识别（试试 Chrome）'
+            : '通话出错了，点挂断重来';
+      });
+    }
+  }
+
+  String _speechErrorCopy(String message) {
+    final lower = message.toLowerCase();
+    final unsupported = lower.contains('not supported') ||
+        lower.contains('not_supported') ||
+        lower.contains('not-supported') ||
+        lower.contains('not available') ||
+        lower.contains('not_available') ||
+        lower.contains('service-not-allowed') ||
+        lower.contains('speech_not_supported');
+    if (kIsWeb && unsupported) {
+      return '浏览器不支持语音识别（试试 Chrome）';
+    }
+    return '通话出错了，点挂断重来';
+  }
+
+  void _onSpeechError(SpeechRecognitionError e) {
+    debugPrint('[feiyu] speech error: ${e.errorMsg} (permanent=${e.permanent})');
+    final msg = e.errorMsg.toLowerCase();
+    final benign = msg.contains('no-speech') ||
+        msg.contains('no_speech') ||
+        msg.contains('no match') ||
+        msg.contains('no_match');
+    if (benign) {
+      if (mounted && _inCall && _callPhase == CallPhase.listening && !_busy) {
+        unawaited(_startListening());
+      }
+      return;
+    }
+    if (!mounted || !_inCall) return;
+    setState(() {
+      _callPhase = CallPhase.error;
+      _callErrorText = _speechErrorCopy(e.errorMsg);
+      _listening = false;
+      _voiceHint = '';
+    });
+  }
+
+  void _onSpeechStatus(String status) {
+    if (!mounted || !_inCall) return;
+    // The recogniser stops by itself after `pauseFor`. If nothing final was
+    // heard, reopen the mic so the loop keeps going. When a final transcript
+    // arrives the phase is already `thinking`, so this guard stays quiet.
+    if (status == 'done' || status == 'notListening') {
+      if (_callPhase != CallPhase.listening || _busy) return;
+      Future<void>.delayed(const Duration(milliseconds: 250), () {
+        if (!mounted) return;
+        if (_inCall && _callPhase == CallPhase.listening && !_busy) {
+          unawaited(_startListening());
+        }
+      });
+    }
+  }
+
+  Future<void> _startListening() async {
+    if (!_inCall || _busy || !_speechReady) return;
+    if (_callPhase != CallPhase.listening) return;
+    if (_speech.isListening) return;
+    try {
+      await _speech.listen(
+        onResult: (r) {
+          final words = r.recognizedWords.trim();
+          if (r.finalResult && words.isNotEmpty) {
+            unawaited(_handleTranscript(words));
+          }
+        },
+        listenOptions: SpeechListenOptions(
+          listenFor: const Duration(seconds: 60),
+          pauseFor: const Duration(milliseconds: 1200),
+          partialResults: true,
+          localeId: 'zh_CN',
+          cancelOnError: false,
+        ),
+      );
+    } catch (e) {
+      if (!mounted || !_inCall) return;
+      setState(() {
+        _callPhase = CallPhase.error;
+        _callErrorText = _speechErrorCopy('$e');
+      });
+    }
+  }
+
+  Future<void> _handleTranscript(String words) async {
+    if (!_inCall || _callPhase != CallPhase.listening) return;
+    final t = callNext(_callPhase, CallEvent.transcriptReady);
+    if (t.phase != CallPhase.thinking) return;
+    if (!mounted) return;
+    // Close the mic *before* the request goes out; nothing listens while busy.
+    setState(() {
+      _callPhase = t.phase;
+      _input.text = words;
+      _listening = false;
+      _voiceHint = '';
+    });
+    try {
+      await _speech.stop();
+    } catch (_) {}
+    await _send();
+  }
+
+  /// Runs after `_runAgent` returns for an in-call turn.
+  Future<void> _runCallReply(String reply) async {
+    if (!_inCall || _callPhase != CallPhase.thinking) return;
+    // Half-duplex: never speak while the mic is open.
+    try {
+      await _speech.stop();
+    } catch (_) {}
+    if (!mounted) return;
+    final speaking = callNext(_callPhase, CallEvent.replyTextDone);
+    if (speaking.phase != CallPhase.speaking) return;
+    setState(() {
+      _callPhase = speaking.phase;
+      _listening = false;
+      _voiceHint = '';
+    });
+    await _speak(reply, force: true, awaitCompletion: true);
+    if (!mounted) return;
+    if (!_inCall || _callPhase != CallPhase.speaking) return;
+    final done = callNext(_callPhase, CallEvent.speechDone);
+    if (done.phase != CallPhase.listening) return;
+    setState(() => _callPhase = done.phase);
+    await _startListening();
+  }
+
+  Future<void> _hangup() async {
+    final t = callNext(_callPhase, CallEvent.hangup);
+    try {
+      await _speech.stop();
+    } catch (_) {}
+    try {
+      await _tts.stop();
+    } catch (_) {}
+    final local = _localTts;
+    if (local != null) {
+      try {
+        await local.stop();
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    setState(() {
+      _callPhase = t.phase;
+      _callErrorText = '';
+      _listening = false;
+      _voiceHint = '';
+    });
   }
 
   /// Download the on-device model, showing a simple progress dialog.
@@ -1048,10 +1253,14 @@ class _ChatPageState extends State<ChatPage> {
     });
     _scrollToEnd();
     _revealStart = DateTime.now();
-    await _runAgent();
+    final reply = await _runAgent();
+    if (!mounted) return;
+    if (_inCall && _callPhase == CallPhase.thinking) {
+      await _runCallReply(reply);
+    }
   }
 
-  Future<void> _runAgent() async {
+  Future<String> _runAgent() async {
     final s = _settings!;
     final target = _messages.last;
     final convo = <Map<String, dynamic>>[
@@ -1120,11 +1329,14 @@ class _ChatPageState extends State<ChatPage> {
           if (target.content.trim().isEmpty) _messages.removeLast();
         });
         unawaited(ChatStore.save(_messages));
-        if (target.content.trim().isNotEmpty) unawaited(_speak(target.content));
+        if (target.content.trim().isNotEmpty && !_inCall) {
+          unawaited(_speak(target.content));
+        }
         unawaited(_maybeSummarize(s));
         _resetIdleTimer();
       }
     }
+    return target.content.trim();
   }
 
   Future<({String text, List<Map<String, dynamic>> toolCalls})> _streamTurn(
@@ -1575,25 +1787,37 @@ class _ChatPageState extends State<ChatPage> {
 
   // ---------------- speech out ----------------
 
-  Future<void> _speak(String text) async {
+  Future<void> _speak(
+    String text, {
+    bool force = false,
+    bool awaitCompletion = false,
+  }) async {
     final s = _settings;
-    if (s == null || !s.ttsEnabled || text.trim().isEmpty) return;
+    if (s == null || (!force && !s.ttsEnabled) || text.trim().isEmpty) return;
     // Long essays get tiring to hear.
     final spoken = text.length > 220 ? '${text.substring(0, 220)}…' : text;
 
     if (s.ttsEngine == 'local') {
       try {
-        final engine = await LocalTtsImpl.create();
-        if (!await engine.ready) {
+        final engine = _localTts ??= await LocalTtsImpl.create();
+        if (await engine.ready) {
+          final ok = await engine.speak(
+            spoken,
+            sid: s.ttsSid,
+            speed: s.ttsSpeed,
+            awaitCompletion: awaitCompletion,
+          );
+          if (!ok) debugPrint('[feiyu] local tts produced nothing');
+          return;
+        }
+        if (!force) {
           debugPrint('[feiyu] local tts model missing');
           return;
         }
-        final ok = await engine.speak(spoken, sid: s.ttsSid, speed: s.ttsSpeed);
-        if (!ok) debugPrint('[feiyu] local tts produced nothing');
-        return;
+        // Call mode wants audio: fall through to the system engine.
       } catch (e) {
         debugPrint('[feiyu] local tts FAILED: $e');
-        return;
+        if (!force) return;
       }
     }
 
@@ -1602,6 +1826,7 @@ class _ChatPageState extends State<ChatPage> {
       await _tts.setLanguage('zh-CN');
       await _tts.setSpeechRate(0.52);
       await _tts.setPitch(1.05);
+      await _tts.awaitSpeakCompletion(awaitCompletion);
       await _tts.speak(spoken);
     } catch (e) {
       debugPrint('[feiyu] system tts FAILED: $e');
@@ -1895,6 +2120,8 @@ class _ChatPageState extends State<ChatPage> {
                   ),
                   if (_pendingImage != null) _pendingImageBar(),
                   if (_listening) _listeningBar(),
+                  if (_callPhase != CallPhase.off)
+                    CallBanner(phase: _callPhase, message: _callErrorText),
                   _composer(),
                 ],
               ),
@@ -1964,6 +2191,9 @@ class _ChatPageState extends State<ChatPage> {
       onStop: _stop,
       onSubmitted: (_) => _send(),
       hint: _listening ? '正在听…' : '和大肥鱼说点什么…',
+      inCall: _inCall,
+      onCall: _enterCall,
+      onHangup: _hangup,
     );
   }
 }

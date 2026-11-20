@@ -107,7 +107,12 @@ class LocalTtsImpl {
     return engine;
   }
 
-  Future<bool> speak(String text, {int sid = 47, double speed = 1.0}) async {
+  Future<bool> speak(
+    String text, {
+    int sid = 47,
+    double speed = 1.0,
+    bool awaitCompletion = false,
+  }) async {
     if (!await ready) return false;
     final clean = text.replaceAll(RegExp(r'[*#`>_\[\]()]'), ' ').trim();
     if (clean.isEmpty) return false;
@@ -118,7 +123,15 @@ class LocalTtsImpl {
       final path = '${_dir.path}/out_${DateTime.now().microsecondsSinceEpoch}.wav';
       await _writeWav(path, audio.samples, audio.sampleRate);
       await _player.stop();
+      // Subscribe before play so a very short clip cannot complete first.
+      Future<void>? finished;
+      if (awaitCompletion) {
+        finished = _player.onPlayerComplete.first
+            .timeout(const Duration(seconds: 60))
+            .then<void>((_) {}, onError: (Object _) {});
+      }
       await _player.play(DeviceFileSource(path));
+      await finished;
       return true;
     } catch (_) {
       return false;
