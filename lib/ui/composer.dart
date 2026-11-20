@@ -141,6 +141,7 @@ class _PressableSendState extends State<_PressableSend> {
           child: Container(
             width: 42,
             height: 42,
+            alignment: Alignment.center,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: AppPalette.ink,
@@ -149,13 +150,16 @@ class _PressableSendState extends State<_PressableSend> {
                 width: 1,
               ),
             ),
-            child: SvgPicture.asset(
-              'assets/icons/send.svg',
+            child: SizedBox(
               width: 20,
               height: 20,
-              colorFilter: ColorFilter.mode(
-                AppPalette.primary,
-                BlendMode.srcIn,
+              child: SvgPicture.asset(
+                'assets/icons/send.svg',
+                fit: BoxFit.contain,
+                colorFilter: ColorFilter.mode(
+                  AppPalette.primary,
+                  BlendMode.srcIn,
+                ),
               ),
             ),
           ),
