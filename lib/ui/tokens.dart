@@ -51,27 +51,27 @@ final class AppPalette {
        _bubbleMine = bubbleMine,
        _composerSurface = composerSurface;
 
-  static const Color ink = Color(0xFF050403);
-  static const Color surface = Color(0xFF0B0906);
-  static const Color surfaceAlt = Color(0xFF14100A);
-  static const Color surfaceHi = Color(0xFF1F1810);
-  static const Color primary = Color(0xFFE0B65A);
-  static const Color primaryDeep = Color(0xFFA9762A);
-  static const Color primaryInk = Color(0xFF1A1206);
-  static const Color accent = Color(0xFFC8463A);
-  static const Color warm = Color(0xFFF2C879);
-  static const Color warmDeep = Color(0xFFE07A4A);
-  static const Color mint = Color(0xFFB9A46B);
-  static const Color danger = Color(0xFFE5544A);
-  static const Color text1 = Color(0xFFF6F1E7);
-  static const Color text2 = Color(0x9EF6F1E7);
-  static const Color text3 = Color(0x8CF6F1E7);
-  static const Color text4 = Color(0x42F6F1E7);
-  static const Color line = Color(0x14F6F1E7);
-  static const Color lineStrong = Color(0x24F6F1E7);
-  static const Color bubbleSurface = Color(0xFF171208);
-  static const Color bubbleMine = Color(0xFF221A0B);
-  static const Color composerSurface = Color(0xE60A0806);
+  static const Color ink = Color(0xFF050607);
+  static const Color surface = Color(0xFF0B0E10);
+  static const Color surfaceAlt = Color(0xFF12171A);
+  static const Color surfaceHi = Color(0xFF1B2226);
+  static const Color primary = Color(0xFF8FD3C4);
+  static const Color primaryDeep = Color(0xFF4F9E8F);
+  static const Color primaryInk = Color(0xFF06211C);
+  static const Color accent = Color(0xFFD9786B);
+  static const Color warm = Color(0xFFE8D6AE);
+  static const Color warmDeep = Color(0xFFCBAA76);
+  static const Color mint = Color(0xFFA9C8BA);
+  static const Color danger = Color(0xFFE06B5F);
+  static const Color text1 = Color(0xFFF2F5F3);
+  static const Color text2 = Color(0x9EF2F5F3);
+  static const Color text3 = Color(0x8CF2F5F3);
+  static const Color text4 = Color(0x42F2F5F3);
+  static const Color line = Color(0x14F2F5F3);
+  static const Color lineStrong = Color(0x24F2F5F3);
+  static const Color bubbleSurface = Color(0xFF13181B);
+  static const Color bubbleMine = Color(0xFF1A2226);
+  static const Color composerSurface = Color(0xE6090C0E);
 
   final Color _ink;
   final Color _surface;
@@ -336,20 +336,20 @@ final class AppGradients {
        _scrimBottom = scrimBottom;
 
   static const LinearGradient send = LinearGradient(
-    colors: [Color(0xFFF0C877), Color(0xFFA9762A)],
+    colors: [Color(0xFFA9E3D6), Color(0xFF4F9E8F)],
   );
   static const LinearGradient avatar = LinearGradient(
-    colors: [Color(0xFFF2D089), Color(0xFFA9762A)],
+    colors: [Color(0xFFC6E9DF), Color(0xFF4F9E8F)],
   );
   static const LinearGradient scrimTop = LinearGradient(
     begin: Alignment.topCenter,
     end: Alignment.bottomCenter,
-    colors: [Color(0xB8050403), Color(0x00050403)],
+    colors: [Color(0xB8050607), Color(0x00050607)],
   );
   static const LinearGradient scrimBottom = LinearGradient(
     begin: Alignment.topCenter,
     end: Alignment.bottomCenter,
-    colors: [Color(0x00050403), Color(0xC7050403)],
+    colors: [Color(0x00050607), Color(0xC7050607)],
   );
 
   final LinearGradient _send;
@@ -386,7 +386,7 @@ final class AppShadows {
     BoxShadow(color: Color(0x47000000), blurRadius: 18, offset: Offset(0, 6)),
   ];
   static const List<BoxShadow> glow = [
-    BoxShadow(color: Color(0x3DE0B65A), blurRadius: 16),
+    BoxShadow(color: Color(0x3D8FD3C4), blurRadius: 16),
   ];
 
   final List<BoxShadow> _soft;
