@@ -45,6 +45,7 @@ dependencies:
   archive: ^3.6.1
   flutter_tts: ^4.2.0
   path_provider: ^2.1.4
+  flutter_svg: ^2.0.10
 
 dev_dependencies:
   flutter_test:
@@ -101,3 +102,4 @@ flutter:
 
   assets:
     - assets/scene/
+    - assets/avatar/
