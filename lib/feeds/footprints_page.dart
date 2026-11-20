@@ -10,8 +10,14 @@ import 'footprints.dart';
 class FootprintsPage extends StatefulWidget {
   final List<Footprint> items;
   final Future<Footprint?> Function() onDistill;
+  final String? avatarBase64;
 
-  const FootprintsPage({super.key, required this.items, required this.onDistill});
+  const FootprintsPage({
+    super.key,
+    required this.items,
+    required this.onDistill,
+    this.avatarBase64,
+  });
 
   @override
   State<FootprintsPage> createState() => _FootprintsPageState();
@@ -84,7 +90,10 @@ class _FootprintsPageState extends State<FootprintsPage> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const AvatarMark(size: 72),
+                      AvatarMark(
+                        size: 72,
+                        imageBase64: widget.avatarBase64,
+                      ),
                       const SizedBox(height: AppSpacing.l),
                       Text(
                         '还没有足迹。\n多聊几轮，她会自己挑一些瞬间留在这里。',
@@ -145,7 +154,7 @@ class _FootprintsPageState extends State<FootprintsPage> {
         children: [
           Row(
             children: [
-              const AvatarMark(size: 28),
+              AvatarMark(size: 28, imageBase64: widget.avatarBase64),
               const SizedBox(width: AppSpacing.m),
               Expanded(
                 child: Text(

@@ -15,6 +15,7 @@ class EmptyState extends StatelessWidget {
     required this.samples,
     required this.onSample,
     this.buildTag,
+    this.avatarBase64,
   });
 
   /// Sample prompts rendered as tappable pills.
@@ -25,6 +26,8 @@ class EmptyState extends StatelessWidget {
 
   /// Optional build tag appended to the hint line.
   final String? buildTag;
+
+  final String? avatarBase64;
 
   @override
   Widget build(BuildContext context) {
@@ -39,7 +42,7 @@ class EmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            const AvatarMark(size: 96, glow: true),
+            AvatarMark(size: 96, glow: true, imageBase64: avatarBase64),
             const SizedBox(height: 20),
             Text(
               '今天想聊点什么？',

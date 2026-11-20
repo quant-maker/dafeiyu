@@ -18,6 +18,7 @@ import 'providers.dart';
 import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'ui/attachments.dart';
+import 'ui/avatar_mark.dart';
 import 'ui/chat_app_bar.dart';
 import 'ui/composer.dart';
 import 'ui/empty_state.dart';
@@ -111,6 +112,7 @@ class Settings {
   String apiKey;
   String model;
   String persona;
+  String? avatar;
   bool memoryEnabled;
   bool proactiveEnabled;
   bool sceneEnabled;
@@ -144,6 +146,7 @@ class Settings {
     required this.apiKey,
     required this.model,
     required this.persona,
+    this.avatar,
     this.memoryEnabled = true,
     this.proactiveEnabled = false,
     this.sceneEnabled = true,
@@ -190,11 +193,13 @@ class Settings {
     }
     final j = jsonDecode(raw) as Map<String, dynamic>;
     String pick(String? v, String fallback) => (v == null || v.trim().isEmpty) ? fallback : v;
+    final String rawAvatar = (j['avatar'] as String?)?.trim() ?? '';
     return Settings(
       baseUrl: pick(j['baseUrl'] as String?, defaultBaseUrl()),
       apiKey: pick(j['apiKey'] as String?, kKeyInjected ? kInjectedKey : ''),
       model: pick(j['model'] as String?, kDefaultModel),
       persona: pick(j['persona'] as String?, kPresetPersona),
+      avatar: rawAvatar.isEmpty ? null : rawAvatar,
       memoryEnabled: j['memoryEnabled'] as bool? ?? true,
       proactiveEnabled: j['proactiveEnabled'] as bool? ?? false,
       sceneEnabled: j['sceneEnabled'] as bool? ?? true,
@@ -243,6 +248,7 @@ class Settings {
         'apiKey': apiKey,
         'model': model,
         'persona': persona,
+        if (avatar != null && avatar!.isNotEmpty) 'avatar': avatar!,
         'memoryEnabled': memoryEnabled,
         'proactiveEnabled': proactiveEnabled,
         'sceneEnabled': sceneEnabled,
@@ -1716,6 +1722,7 @@ class _ChatPageState extends State<ChatPage> {
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => FootprintsPage(
         items: _footprints,
+        avatarBase64: _settings?.avatar,
         onDistill: () async {
           final s = _settings;
           if (s == null) return null;
@@ -1813,6 +1820,7 @@ class _ChatPageState extends State<ChatPage> {
           title: '大肥鱼',
           status: _statusLine(),
           mood: _mood,
+          avatarBase64: _settings?.avatar,
           onFootprints: _openFootprints,
           onComfy: _openComfy,
           onNewChat: _clear,
@@ -1902,6 +1910,7 @@ class _ChatPageState extends State<ChatPage> {
       samples: const ['今天有什么好玩的', '帮我看看这张图', '你还记得我吗'],
       onSample: _send,
       buildTag: kBuildTag,
+      avatarBase64: _settings?.avatar,
     );
   }
 
@@ -1912,6 +1921,7 @@ class _ChatPageState extends State<ChatPage> {
       waitingFirstToken: _waitingFirstToken,
       onOpenImage: _openImage,
       controller: _scroll,
+      avatarBase64: _settings?.avatar,
     );
   }
 
@@ -1991,6 +2001,8 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _visionKey;
   late final TextEditingController _visionModel;
   late int _proactiveIdleMinutes;
+  String? _avatar;
+  String? _avatarError;
   List<String> _models = const [];
   bool _loadingModels = false;
   String? _modelError;
@@ -2031,6 +2043,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _visionKey = TextEditingController(text: widget.initial.visionApiKey);
     _visionModel = TextEditingController(text: widget.initial.visionModel);
     _proactiveIdleMinutes = widget.initial.proactiveIdleMinutes;
+    _avatar = widget.initial.avatar;
     if (widget.initial.apiKey.trim().isNotEmpty) _loadModels();
   }
 
@@ -2148,12 +2161,13 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  void _save() {
-    Navigator.of(context).pop(Settings(
+  Settings _collect() {
+    return Settings(
       baseUrl: _base.text.trim(),
       apiKey: _key.text.trim(),
       model: _model.text.trim(),
       persona: _persona.text,
+      avatar: _avatar,
       memoryEnabled: _memoryEnabled,
       proactiveEnabled: _proactiveEnabled,
       proactiveIdleMinutes: _proactiveIdleMinutes,
@@ -2180,7 +2194,52 @@ class _SettingsPageState extends State<SettingsPage> {
       comfyWorkflow: _comfyWorkflow.text,
       comfyWorkflowRemoveBg: _comfyRemoveBg.text,
       comfyWorkflowEdit: _comfyEdit.text,
-    ));
+    );
+  }
+
+  void _save() {
+    Navigator.of(context).pop(_collect());
+  }
+
+  /// Persists the current form without leaving the page — used by controls
+  /// that should take effect immediately (e.g. picking an avatar).
+  Future<void> _persist() async {
+    await _collect().save();
+  }
+
+  Future<void> _pickAvatar() async {
+    try {
+      final file = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 512,
+        imageQuality: 80,
+      );
+      if (!mounted) return;
+      if (file == null) return;
+      final bytes = await file.readAsBytes();
+      if (!mounted) return;
+      if (bytes.length > 700 * 1024) {
+        setState(() => _avatarError = '头像太大，换一张小一点的');
+        return;
+      }
+      setState(() {
+        _avatar = base64Encode(bytes);
+        _avatarError = null;
+      });
+      await _persist();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _avatarError = '选图失败：$e');
+    }
+  }
+
+  Future<void> _resetAvatar() async {
+    if (_avatar == null) return;
+    setState(() {
+      _avatar = null;
+      _avatarError = null;
+    });
+    await _persist();
   }
 
   @override
@@ -2311,6 +2370,47 @@ class _SettingsPageState extends State<SettingsPage> {
                   decoration: const InputDecoration(hintText: '也可以手填模型名', isDense: true),
                   onChanged: (_) => setState(() {}),
                 ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          SectionCard(
+            key: const ValueKey('settings-section-avatar'),
+            title: '头像',
+            children: <Widget>[
+              Row(
+                children: <Widget>[
+                  AvatarMark(size: 64, imageBase64: _avatar),
+                  const SizedBox(width: AppSpacing.l),
+                  Expanded(
+                    child: Text(
+                      '换一张喜欢的照片，聊天和足迹里都会用它。',
+                      style: AppType.caption.copyWith(color: AppPalette.text3),
+                    ),
+                  ),
+                ],
+              ),
+              if (_avatarError != null) ...[
+                const SizedBox(height: AppSpacing.m),
+                InlineNotice(
+                  message: _avatarError!,
+                  onDismiss: () => setState(() => _avatarError = null),
+                ),
+              ],
+              const SizedBox(height: AppSpacing.m),
+              Row(
+                children: <Widget>[
+                  PrimaryButton(
+                    label: '从相册选择',
+                    icon: Icons.photo_library_outlined,
+                    onPressed: _pickAvatar,
+                  ),
+                  const SizedBox(width: AppSpacing.m),
+                  TextButton(
+                    onPressed: _avatar == null ? null : _resetAvatar,
+                    child: const Text('恢复默认'),
+                  ),
+                ],
               ),
             ],
           ),

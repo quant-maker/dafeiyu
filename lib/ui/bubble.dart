@@ -21,6 +21,7 @@ class MessageBubble extends StatelessWidget {
     this.typing = false,
     this.trailing,
     this.maxWidth = 560,
+    this.avatarBase64,
   });
 
   final String content;
@@ -31,6 +32,7 @@ class MessageBubble extends StatelessWidget {
   final bool typing;
   final Widget? trailing;
   final double maxWidth;
+  final String? avatarBase64;
 
   Widget _bubble(BuildContext context) {
     return LayoutBuilder(
@@ -124,7 +126,7 @@ class MessageBubble extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        const AvatarMark(size: 26, ring: false),
+        AvatarMark(size: 26, ring: false, imageBase64: avatarBase64),
         const SizedBox(width: 8),
         Flexible(
           child: Column(

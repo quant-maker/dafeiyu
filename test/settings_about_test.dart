@@ -33,7 +33,7 @@ void main() {
       find.text('所有数据只存在这台设备上：Key、对话、记忆都不经过任何第三方服务器。'),
       findsOneWidget,
     );
-    expect(find.byType(SectionCard), findsNWidgets(7));
+    expect(find.byType(SectionCard), findsNWidgets(8));
     expect(tester.takeException(), isNull);
   });
 }

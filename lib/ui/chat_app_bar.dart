@@ -18,6 +18,7 @@ class ChatAppBar extends StatelessWidget implements PreferredSizeWidget {
     required this.title,
     required this.status,
     required this.mood,
+    this.avatarBase64,
     required this.onFootprints,
     required this.onComfy,
     required this.onNewChat,
@@ -29,6 +30,7 @@ class ChatAppBar extends StatelessWidget implements PreferredSizeWidget {
   final String title;
   final String status;
   final SceneMood mood;
+  final String? avatarBase64;
   final VoidCallback onFootprints;
   final VoidCallback onComfy;
   final VoidCallback onNewChat;
@@ -63,7 +65,7 @@ class ChatAppBar extends StatelessWidget implements PreferredSizeWidget {
         child: Row(
           children: <Widget>[
             const SizedBox(width: AppSpacing.l),
-            const AvatarMark(size: 34, glow: true),
+            AvatarMark(size: 34, glow: true, imageBase64: avatarBase64),
             const SizedBox(width: 10),
             Expanded(
               child: Row(
