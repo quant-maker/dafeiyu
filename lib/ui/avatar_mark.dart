@@ -1,167 +1,137 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import 'tokens.dart';
 
-/// A themed fish mark that stands in for the old emoji avatar in app chrome.
+/// A themed avatar badge used throughout the app chrome.
 ///
-/// The mark is drawn with a [CustomPaint] so it stays crisp and size-aware at
-/// every place it appears (26 in bubbles, 34 in the app bar, 72/96 in the empty
-/// state, 28 in the footprints card).
+/// With no [imageBase64] it renders the bundled vector badge
+/// (`assets/avatar/default_avatar.svg`). With a user-supplied base64 image it
+/// renders that image instead, always cropped to a circle.
 class AvatarMark extends StatelessWidget {
   const AvatarMark({
     super.key,
     this.size = 34,
     this.ring = true,
     this.glow = false,
+    this.imageBase64,
   });
 
   /// Edge length of the square mark in logical pixels.
   final double size;
 
-  /// Whether to draw the 1px rim and subtle inner backdrop.
+  /// Whether to draw the 1px gold rim.
   final bool ring;
 
   /// Whether to wrap the mark in the soft primary glow.
   final bool glow;
 
+  /// Optional base64-encoded user image (no `data:` prefix).
+  final String? imageBase64;
+
   @override
   Widget build(BuildContext context) {
-    final Widget canvas = CustomPaint(
-      size: Size.square(size),
-      painter: _FishPainter(
-        size: size,
-        ring: ring,
-        gradient: AppGradients.avatar,
-        eye: AppPalette.primaryInk,
-        rim: AppPalette.lineStrong,
-        highlight: AppPalette.text1,
-        backdrop: AppPalette.surfaceHi,
+    final Widget content = _AvatarImage(base64: imageBase64, size: size);
+
+    final Widget framed = Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: AppPalette.ink,
+        border: ring
+            ? Border.all(color: AppPalette.primary.withValues(alpha: .35))
+            : null,
       ),
+      child: ClipOval(child: content),
     );
 
-    final Widget mark = glow
-        ? DecoratedBox(
-            decoration: const BoxDecoration(
-              shape: BoxShape.circle,
-              boxShadow: AppShadows.glow,
-            ),
-            child: canvas,
-          )
-        : canvas;
+    final Widget sized = SizedBox(
+      width: size,
+      height: size,
+      child: glow
+          ? DecoratedBox(
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                boxShadow: AppShadows.glow,
+              ),
+              child: framed,
+            )
+          : framed,
+    );
 
     return Semantics(
       image: true,
       label: '大肥鱼',
-      child: ExcludeSemantics(child: mark),
+      child: ExcludeSemantics(child: sized),
     );
   }
 }
 
-class _FishPainter extends CustomPainter {
-  _FishPainter({
-    required this.size,
-    required this.ring,
-    required this.gradient,
-    required this.eye,
-    required this.rim,
-    required this.highlight,
-    required this.backdrop,
-  });
+Widget _defaultSvg(double size) {
+  return SvgPicture.asset(
+    'assets/avatar/default_avatar.svg',
+    width: size,
+    height: size,
+    fit: BoxFit.cover,
+  );
+}
 
+/// Decodes [base64] exactly once per payload, not on every rebuild.
+class _AvatarImage extends StatefulWidget {
+  const _AvatarImage({required this.base64, required this.size});
+
+  final String? base64;
   final double size;
-  final bool ring;
-  final LinearGradient gradient;
-  final Color eye;
-  final Color rim;
-  final Color highlight;
-  final Color backdrop;
 
   @override
-  void paint(Canvas canvas, Size canvasSize) {
-    final double s = size;
-    final Offset center = Offset(canvasSize.width / 2, canvasSize.height / 2);
-    final double radius = s / 2;
+  State<_AvatarImage> createState() => _AvatarImageState();
+}
 
-    if (ring) {
-      canvas.drawCircle(
-        center,
-        radius - 0.5,
-        Paint()..color = backdrop.withValues(alpha: 0.55),
-      );
+class _AvatarImageState extends State<_AvatarImage> {
+  Uint8List? _bytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _decode();
+  }
+
+  @override
+  void didUpdateWidget(covariant _AvatarImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.base64 != widget.base64) {
+      _decode();
     }
+  }
 
-    final Paint bodyPaint = Paint()
-      ..shader = gradient.createShader(Offset.zero & canvasSize);
-
-    // Tail.
-    final Path tail = Path()
-      ..moveTo(s * 0.70, s * 0.52)
-      ..lineTo(s * 0.90, s * 0.33)
-      ..lineTo(s * 0.90, s * 0.71)
-      ..close();
-    canvas.drawPath(tail, bodyPaint);
-
-    // Top fin.
-    final Path fin = Path()
-      ..moveTo(s * 0.38, s * 0.36)
-      ..lineTo(s * 0.47, s * 0.20)
-      ..lineTo(s * 0.56, s * 0.37)
-      ..close();
-    canvas.drawPath(fin, bodyPaint);
-
-    // Body.
-    final Rect bodyRect = Rect.fromCenter(
-      center: Offset(s * 0.45, s * 0.52),
-      width: s * 0.58,
-      height: s * 0.40,
-    );
-    canvas.drawOval(bodyRect, bodyPaint);
-
-    // Specular highlights.
-    canvas.drawOval(
-      Rect.fromCenter(
-        center: Offset(s * 0.36, s * 0.42),
-        width: s * 0.16,
-        height: s * 0.09,
-      ),
-      Paint()..color = highlight.withValues(alpha: 0.85),
-    );
-    canvas.drawOval(
-      Rect.fromCenter(
-        center: Offset(s * 0.40, s * 0.58),
-        width: s * 0.10,
-        height: s * 0.06,
-      ),
-      Paint()..color = highlight.withValues(alpha: 0.45),
-    );
-
-    // Eye.
-    canvas.drawCircle(
-      Offset(s * 0.60, s * 0.45),
-      s * 0.045,
-      Paint()..color = eye,
-    );
-
-    if (ring) {
-      canvas.drawCircle(
-        center,
-        radius - 0.5,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1
-          ..color = rim,
-      );
+  void _decode() {
+    final String? raw = widget.base64;
+    if (raw == null || raw.isEmpty) {
+      _bytes = null;
+      return;
+    }
+    try {
+      _bytes = base64Decode(raw);
+    } on FormatException {
+      _bytes = null;
     }
   }
 
   @override
-  bool shouldRepaint(covariant _FishPainter oldDelegate) {
-    return oldDelegate.size != size ||
-        oldDelegate.ring != ring ||
-        oldDelegate.gradient != gradient ||
-        oldDelegate.eye != eye ||
-        oldDelegate.rim != rim ||
-        oldDelegate.highlight != highlight ||
-        oldDelegate.backdrop != backdrop;
+  Widget build(BuildContext context) {
+    final Uint8List? bytes = _bytes;
+    if (bytes == null) {
+      return _defaultSvg(widget.size);
+    }
+    return Image.memory(
+      bytes,
+      fit: BoxFit.cover,
+      gaplessPlayback: true,
+      errorBuilder: (_, _, _) => _defaultSvg(widget.size),
+    );
   }
 }
