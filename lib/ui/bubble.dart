@@ -22,6 +22,7 @@ class MessageBubble extends StatelessWidget {
     this.trailing,
     this.maxWidth = 560,
     this.avatarBase64,
+    this.userAvatarBase64,
   });
 
   final String content;
@@ -33,6 +34,7 @@ class MessageBubble extends StatelessWidget {
   final Widget? trailing;
   final double maxWidth;
   final String? avatarBase64;
+  final String? userAvatarBase64;
 
   Widget _bubble(BuildContext context) {
     return LayoutBuilder(
@@ -119,7 +121,18 @@ class MessageBubble extends StatelessWidget {
     if (mine) {
       return Row(
         mainAxisAlignment: MainAxisAlignment.end,
-        children: <Widget>[Flexible(child: _bubble(context))],
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Flexible(child: _bubble(context)),
+          const SizedBox(width: 8),
+          userAvatarBase64 == null
+              ? const _UserAvatarPlaceholder()
+              : AvatarMark(
+                  size: 26,
+                  ring: false,
+                  imageBase64: userAvatarBase64,
+                ),
+        ],
       );
     }
 
@@ -145,6 +158,31 @@ class MessageBubble extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Neutral stand-in for the owner's avatar when they have not set one.
+///
+/// Deliberately not her whale: the right-hand side belongs to the owner.
+class _UserAvatarPlaceholder extends StatelessWidget {
+  const _UserAvatarPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 26,
+      height: 26,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: AppPalette.surfaceHi,
+        border: Border.all(color: AppPalette.line, width: 1),
+      ),
+      child: const Icon(
+        Icons.person_outline,
+        size: 14,
+        color: AppPalette.text3,
+      ),
     );
   }
 }

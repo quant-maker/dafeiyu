@@ -117,6 +117,7 @@ class Settings {
   String model;
   String persona;
   String? avatar;
+  String? userAvatar;
   bool memoryEnabled;
   bool proactiveEnabled;
   bool sceneEnabled;
@@ -151,6 +152,7 @@ class Settings {
     required this.model,
     required this.persona,
     this.avatar,
+    this.userAvatar,
     this.memoryEnabled = true,
     this.proactiveEnabled = false,
     this.sceneEnabled = true,
@@ -198,12 +200,14 @@ class Settings {
     final j = jsonDecode(raw) as Map<String, dynamic>;
     String pick(String? v, String fallback) => (v == null || v.trim().isEmpty) ? fallback : v;
     final String rawAvatar = (j['avatar'] as String?)?.trim() ?? '';
+    final String rawUserAvatar = (j['userAvatar'] as String?)?.trim() ?? '';
     return Settings(
       baseUrl: pick(j['baseUrl'] as String?, defaultBaseUrl()),
       apiKey: pick(j['apiKey'] as String?, kKeyInjected ? kInjectedKey : ''),
       model: pick(j['model'] as String?, kDefaultModel),
       persona: pick(j['persona'] as String?, kPresetPersona),
       avatar: rawAvatar.isEmpty ? null : rawAvatar,
+      userAvatar: rawUserAvatar.isEmpty ? null : rawUserAvatar,
       memoryEnabled: j['memoryEnabled'] as bool? ?? true,
       proactiveEnabled: j['proactiveEnabled'] as bool? ?? false,
       sceneEnabled: j['sceneEnabled'] as bool? ?? true,
@@ -253,6 +257,8 @@ class Settings {
         'model': model,
         'persona': persona,
         if (avatar != null && avatar!.isNotEmpty) 'avatar': avatar!,
+        if (userAvatar != null && userAvatar!.isNotEmpty)
+          'userAvatar': userAvatar!,
         'memoryEnabled': memoryEnabled,
         'proactiveEnabled': proactiveEnabled,
         'sceneEnabled': sceneEnabled,
@@ -382,6 +388,18 @@ String _mimeOfBytes(List<int> b) {
     return 'image/webp';
   }
   return 'unknown';
+}
+
+bool isUsableImageBase64(String b64) {
+  if (b64.isEmpty || b64.length % 4 != 0) return false;
+  List<int> bytes;
+  try {
+    bytes = base64Decode(b64);
+  } catch (_) {
+    return false;
+  }
+  if (bytes.length < 12) return false;
+  return _mimeOfBytes(bytes) != 'unknown';
 }
 
 class Message {
@@ -1285,17 +1303,12 @@ class _ChatPageState extends State<ChatPage> {
     final image = _pendingImage;
     if (image != null) {
       var decoded = const <int>[];
-      var decodedOk = true;
       try {
         decoded = base64Decode(image);
-      } catch (_) {
-        decodedOk = false;
-      }
-      final mime = _mimeOfBytes(decoded);
-      final valid = decodedOk && image.length % 4 == 0 && mime != 'unknown';
+      } catch (_) {}
       debugPrint(
           '[feiyu] img send bytes=${image.length} mod4=${image.length % 4} magic=${_hexHead(decoded)} mime=${imageMimeFor(image)}');
-      if (!valid) {
+      if (!isUsableImageBase64(image)) {
         setState(() => _error = '这张图好像坏了，换一张试试');
         return;
       }
@@ -1334,7 +1347,11 @@ class _ChatPageState extends State<ChatPage> {
         final lastImage = tail.lastIndexWhere((m) => m.imageBase64 != null);
         return [
           for (var i = 0; i < tail.length; i++)
-            if (i == lastImage || tail[i].imageBase64 == null)
+            if (i == lastImage &&
+                tail[i].imageBase64 != null &&
+                isUsableImageBase64(tail[i].imageBase64!))
+              tail[i].toJson()
+            else if (tail[i].imageBase64 == null)
               tail[i].toJson()
             else
               {
@@ -1924,7 +1941,7 @@ class _ChatPageState extends State<ChatPage> {
   String? _lastImageBase64() {
     for (var i = _messages.length - 1; i >= 0; i--) {
       final img = _messages[i].imageBase64;
-      if (img != null && img.isNotEmpty) return img;
+      if (img != null && isUsableImageBase64(img)) return img;
     }
     return null;
   }
@@ -2219,6 +2236,7 @@ class _ChatPageState extends State<ChatPage> {
       onOpenImage: _openImage,
       controller: _scroll,
       avatarBase64: _settings?.avatar,
+      userAvatarBase64: _settings?.userAvatar,
     );
   }
 
@@ -2303,6 +2321,8 @@ class _SettingsPageState extends State<SettingsPage> {
   late int _proactiveIdleMinutes;
   String? _avatar;
   String? _avatarError;
+  String? _userAvatar;
+  String? _userAvatarError;
   List<String> _models = const [];
   bool _loadingModels = false;
   String? _modelError;
@@ -2344,6 +2364,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _visionModel = TextEditingController(text: widget.initial.visionModel);
     _proactiveIdleMinutes = widget.initial.proactiveIdleMinutes;
     _avatar = widget.initial.avatar;
+    _userAvatar = widget.initial.userAvatar;
     if (widget.initial.apiKey.trim().isNotEmpty) _loadModels();
   }
 
@@ -2468,6 +2489,7 @@ class _SettingsPageState extends State<SettingsPage> {
       model: _model.text.trim(),
       persona: _persona.text,
       avatar: _avatar,
+      userAvatar: _userAvatar,
       memoryEnabled: _memoryEnabled,
       proactiveEnabled: _proactiveEnabled,
       proactiveIdleMinutes: _proactiveIdleMinutes,
@@ -2538,6 +2560,41 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(() {
       _avatar = null;
       _avatarError = null;
+    });
+    await _persist();
+  }
+
+  Future<void> _pickUserAvatar() async {
+    try {
+      final file = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 512,
+        imageQuality: 80,
+      );
+      if (!mounted) return;
+      if (file == null) return;
+      final bytes = await file.readAsBytes();
+      if (!mounted) return;
+      if (bytes.length > 700 * 1024) {
+        setState(() => _userAvatarError = '头像太大，换一张小一点的');
+        return;
+      }
+      setState(() {
+        _userAvatar = base64Encode(bytes);
+        _userAvatarError = null;
+      });
+      await _persist();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _userAvatarError = '选图失败：$e');
+    }
+  }
+
+  Future<void> _resetUserAvatar() async {
+    if (_userAvatar == null) return;
+    setState(() {
+      _userAvatar = null;
+      _userAvatarError = null;
     });
     await _persist();
   }
@@ -2678,39 +2735,27 @@ class _SettingsPageState extends State<SettingsPage> {
             key: const ValueKey('settings-section-avatar'),
             title: '头像',
             children: <Widget>[
-              Row(
-                children: <Widget>[
-                  AvatarMark(size: 64, imageBase64: _avatar),
-                  const SizedBox(width: AppSpacing.l),
-                  Expanded(
-                    child: Text(
-                      '换一张喜欢的照片，聊天和足迹里都会用它。',
-                      style: AppType.caption.copyWith(color: AppPalette.text3),
-                    ),
-                  ),
-                ],
+              _AvatarSettingsBlock(
+                title: '大肥鱼',
+                subtitle: '聊天和足迹里都会用它。',
+                imageBase64: _avatar,
+                error: _avatarError,
+                onPick: _pickAvatar,
+                onReset: _avatar == null ? null : _resetAvatar,
+                onDismissError: () => setState(() => _avatarError = null),
               ),
-              if (_avatarError != null) ...[
-                const SizedBox(height: AppSpacing.m),
-                InlineNotice(
-                  message: _avatarError!,
-                  onDismiss: () => setState(() => _avatarError = null),
-                ),
-              ],
-              const SizedBox(height: AppSpacing.m),
-              Row(
-                children: <Widget>[
-                  PrimaryButton(
-                    label: '从相册选择',
-                    icon: Icons.photo_library_outlined,
-                    onPressed: _pickAvatar,
-                  ),
-                  const SizedBox(width: AppSpacing.m),
-                  TextButton(
-                    onPressed: _avatar == null ? null : _resetAvatar,
-                    child: const Text('恢复默认'),
-                  ),
-                ],
+              const SizedBox(height: AppSpacing.l),
+              _AvatarSettingsBlock(
+                title: '你',
+                subtitle: '显示在你的每条消息旁边。',
+                imageBase64: _userAvatar,
+                error: _userAvatarError,
+                onPick: _pickUserAvatar,
+                onReset: _userAvatar == null ? null : _resetUserAvatar,
+                onDismissError: () =>
+                    setState(() => _userAvatarError = null),
+                pickKey: const ValueKey('settings-avatar-self'),
+                useNeutralFallback: true,
               ),
             ],
           ),
@@ -3185,6 +3230,97 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _AvatarSettingsBlock extends StatelessWidget {
+  const _AvatarSettingsBlock({
+    required this.title,
+    required this.subtitle,
+    required this.imageBase64,
+    required this.error,
+    required this.onPick,
+    required this.onReset,
+    required this.onDismissError,
+    this.pickKey,
+    this.useNeutralFallback = false,
+  });
+
+  final String title;
+  final String subtitle;
+  final String? imageBase64;
+  final String? error;
+  final VoidCallback onPick;
+  final VoidCallback? onReset;
+  final VoidCallback onDismissError;
+  final Key? pickKey;
+  final bool useNeutralFallback;
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget preview = (useNeutralFallback && imageBase64 == null)
+        ? Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppPalette.surfaceHi,
+              border: Border.all(color: AppPalette.line),
+            ),
+            child: const Icon(
+              Icons.person_outline,
+              size: 28,
+              color: AppPalette.text3,
+            ),
+          )
+        : AvatarMark(size: 64, imageBase64: imageBase64);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Row(
+          children: <Widget>[
+            preview,
+            const SizedBox(width: AppSpacing.l),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    title,
+                    style: AppType.bodySmall.copyWith(color: AppPalette.text1),
+                  ),
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(
+                    subtitle,
+                    style: AppType.caption.copyWith(color: AppPalette.text3),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        if (error != null) ...[
+          const SizedBox(height: AppSpacing.m),
+          InlineNotice(message: error!, onDismiss: onDismissError),
+        ],
+        const SizedBox(height: AppSpacing.m),
+        Row(
+          children: <Widget>[
+            PrimaryButton(
+              key: pickKey,
+              label: '从相册选择',
+              icon: Icons.photo_library_outlined,
+              onPressed: onPick,
+            ),
+            const SizedBox(width: AppSpacing.m),
+            TextButton(
+              onPressed: onReset,
+              child: const Text('恢复默认'),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }

@@ -13,6 +13,7 @@ void main() {
 
     final Settings s = await Settings.load();
     expect(s.avatar, isNull);
+    expect(s.userAvatar, isNull);
   });
 
   test('save then load round-trips the base64 avatar', () async {
@@ -24,5 +25,17 @@ void main() {
 
     final Settings t = await Settings.load();
     expect(t.avatar, 'ABC123');
+  });
+
+  test('save then load round-trips the owner avatar', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+
+    final Settings s = await Settings.load();
+    s.userAvatar = 'USER456';
+    await s.save();
+
+    final Settings t = await Settings.load();
+    expect(t.userAvatar, 'USER456');
+    expect(t.avatar, isNull);
   });
 }

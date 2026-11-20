@@ -32,6 +32,7 @@ class MessageList extends StatelessWidget {
     this.padding,
     this.controller,
     this.avatarBase64,
+    this.userAvatarBase64,
   });
 
   final List<Message> messages;
@@ -41,6 +42,7 @@ class MessageList extends StatelessWidget {
   final EdgeInsets? padding;
   final ScrollController? controller;
   final String? avatarBase64;
+  final String? userAvatarBase64;
 
   @override
   Widget build(BuildContext context) {
@@ -97,6 +99,7 @@ class MessageList extends StatelessWidget {
           typing: typing,
           trailing: showCaret ? const StreamingCaret() : null,
           avatarBase64: avatarBase64,
+          userAvatarBase64: userAvatarBase64,
         );
         if (isLast) {
           bubble = TweenAnimationBuilder<double>(
