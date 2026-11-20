@@ -527,7 +527,7 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
+class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final _input = TextEditingController();
   final _scroll = ScrollController();
   List<Message> _messages = [];
@@ -559,15 +559,23 @@ class _ChatPageState extends State<ChatPage> {
   DateTime _revealStart = DateTime.now();
   static const _charsPerSecond = 46.0;
   final Random _rng = Random();
-  late final InitiativePolicy _initiative = InitiativePolicy(rng: _rng);
   SharedUrlStore _sharedUrls = SharedUrlStore.empty();
-  Timer? _initiativeTimer;
   Timer? _ignoredTimer;
+  Timer? _pendingThreadTimer;
+  Timer? _afterthoughtTimer;
+  Timer? _longSilenceTimer;
   DateTime? _lastInteraction;
   DateTime? _lastProactiveAt;
-  DateTime? _proactiveDay;
+  DateTime? _pausedAt;
+  DateTime? _day;
+  DateTime? _pendingThreadDay;
   int _proactiveToday = 0;
+  int _opportunitiesToday = 0;
   int _ignoredStreak = 0;
+  bool _dayAnchorDone = false;
+  bool _longSilenceDone = false;
+  bool _dayAnchorPending = false;
+  bool _afterthoughtUsedForTurn = false;
   bool _showJump = false;
   // debug-only preview, never persisted
   bool _preview = false;
@@ -575,6 +583,7 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _preview = kIsWeb && Uri.base.queryParameters['seed'] == '1';
     _scroll.addListener(_onScroll);
     _input.addListener(_noteInteraction);
@@ -587,7 +596,6 @@ class _ChatPageState extends State<ChatPage> {
       debugPrint('[feiyu] settings loaded base=${s.baseUrl} model=${s.model} keyLen=${s.apiKey.length}');
       if (mounted) {
         setState(() => _settings = s);
-        _scheduleNextInitiative();
       }
     }).catchError((Object e, StackTrace st) {
       debugPrint('[feiyu] settings load FAILED: $e');
@@ -646,13 +654,35 @@ class _ChatPageState extends State<ChatPage> {
     final local = _localTts;
     if (local != null) unawaited(local.stop());
     _client?.close();
-    _initiativeTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _ignoredTimer?.cancel();
+    _pendingThreadTimer?.cancel();
+    _afterthoughtTimer?.cancel();
+    _longSilenceTimer?.cancel();
     _input.removeListener(_noteInteraction);
     _input.dispose();
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+        _pausedAt ??= DateTime.now();
+      case AppLifecycleState.resumed:
+        final pausedAt = _pausedAt;
+        _pausedAt = null;
+        if (pausedAt != null &&
+            DateTime.now().difference(pausedAt) >= reopenGap) {
+          unawaited(_consider(InitiativeTrigger.reopen));
+        }
+      case AppLifecycleState.detached:
+        break;
+    }
   }
 
   void _onScroll() {
@@ -687,7 +717,6 @@ class _ChatPageState extends State<ChatPage> {
     if (s != null) {
       await s.save();
       setState(() => _settings = s);
-      _scheduleNextInitiative();
     }
   }
 
@@ -1337,7 +1366,12 @@ class _ChatPageState extends State<ChatPage> {
       }
     }
     _input.clear();
+    _pendingThreadTimer?.cancel();
+    _pendingThreadTimer = null;
+    _afterthoughtTimer?.cancel();
+    _afterthoughtTimer = null;
     _noteUserMessage();
+    _schedulePendingThread(text);
     unawaited(_tts.stop());
     setState(() {
       _error = null;
@@ -1359,6 +1393,7 @@ class _ChatPageState extends State<ChatPage> {
   Future<String> _runAgent() async {
     final s = _settings!;
     final target = _messages.last;
+    _afterthoughtUsedForTurn = false;
     final convo = <Map<String, dynamic>>[
       {'role': 'system', 'content': _systemPrompt(s)},
       ...(() {
@@ -1433,7 +1468,11 @@ class _ChatPageState extends State<ChatPage> {
           unawaited(_speak(target.content));
         }
         unawaited(_maybeSummarize(s));
-        _scheduleNextInitiative();
+        if (target.content.trim().isNotEmpty) _afterReplyOpportunities();
+        if (_dayAnchorPending) {
+          _dayAnchorPending = false;
+          unawaited(_consider(InitiativeTrigger.dayAnchor));
+        }
       }
     }
     return target.content.trim();
@@ -1442,8 +1481,11 @@ class _ChatPageState extends State<ChatPage> {
   Future<({String text, List<Map<String, dynamic>> toolCalls})> _streamTurn(
     Settings s,
     List<Map<String, dynamic>> convo,
-    Message target,
-  ) async {
+    Message target, {
+    int? maxTokens,
+    bool allowTools = true,
+    bool reveal = true,
+  }) async {
     // Images need a vision-capable model; everything else stays on the chat one.
     final hasImage = convo.any((m) => m['content'] is List);
     final useVision = hasImage && s.visionEnabled && s.visionBaseUrl.trim().isNotEmpty;
@@ -1465,8 +1507,9 @@ class _ChatPageState extends State<ChatPage> {
         'model': model,
         'stream': true,
         'messages': convo,
-        'tools': _toolSpecs,
-        'tool_choice': 'auto',
+        if (maxTokens != null) 'max_tokens': maxTokens,
+        if (allowTools) 'tools': _toolSpecs,
+        if (allowTools) 'tool_choice': 'auto',
       });
 
     final resp = await client.send(req);
@@ -1496,7 +1539,7 @@ class _ChatPageState extends State<ChatPage> {
           final piece = delta['content'] as String?;
           if (piece != null && piece.isNotEmpty) {
             buffer.write(piece);
-            if (mounted) {
+            if (reveal && mounted) {
               final elapsed = DateTime.now().difference(_revealStart).inMilliseconds;
               final allowed = (elapsed / 1000 * _charsPerSecond).round() + 8;
               final raw = buffer.toString();
@@ -1529,7 +1572,7 @@ class _ChatPageState extends State<ChatPage> {
                 }
               }
             }
-            if (mounted) setState(() => _activity = '正在查资料…');
+            if (reveal && mounted) setState(() => _activity = '正在查资料…');
           }
         } catch (_) {}
       },
@@ -1546,7 +1589,7 @@ class _ChatPageState extends State<ChatPage> {
 
     // Drain whatever the throttle held back, so the message finishes typing out.
     final full = buffer.toString();
-    while (mounted && target.content.length < full.length) {
+    while (reveal && mounted && target.content.length < full.length) {
       await Future<void>.delayed(const Duration(milliseconds: 60));
       if (!mounted) break;
       final elapsed = DateTime.now().difference(_revealStart).inMilliseconds;
@@ -1744,60 +1787,85 @@ class _ChatPageState extends State<ChatPage> {
 
   // ---------------- proactive ----------------
 
-  /// Typing or focusing the composer counts as presence: note it and push the
-  /// next possible nudge out, but do not clear an ignored streak (only a sent
-  /// message does that).
+  /// Typing or focusing the composer counts as presence: note it so the
+  /// reopen and long-silence checks have a reference point. It never sends.
   void _noteInteraction() {
     _lastInteraction = DateTime.now();
-    _scheduleNextInitiative();
   }
 
-  /// The user actually sent something: forgive past silence and restart.
+  /// The user actually sent something: forgive past silence, mark the day as
+  /// anchored and restart the long-silence clock.
   void _noteUserMessage() {
-    _lastInteraction = DateTime.now();
+    final now = DateTime.now();
+    _rollDay(now);
+    _lastInteraction = now;
     _ignoredStreak = 0;
     _ignoredTimer?.cancel();
     _ignoredTimer = null;
-    _initiativeTimer?.cancel();
-    _scheduleNextInitiative();
+    if (!_preview && !_dayAnchorDone) _dayAnchorPending = true;
+    _armLongSilence(now);
   }
 
-  void _scheduleNextInitiative() {
-    if (_preview) return;
-    _initiativeTimer?.cancel();
-    final s = _settings;
-    if (s == null || !s.proactiveEnabled) return;
-    if (_messages.isEmpty) return;
+  /// Rolls the per-day counters when the local date changes.
+  void _rollDay(DateTime now) {
+    final day = DateTime(now.year, now.month, now.day);
+    if (_day != null && _day == day) return;
+    _day = day;
+    _opportunitiesToday = 0;
+    _proactiveToday = 0;
+    _ignoredStreak = 0;
+    _dayAnchorDone = false;
+    _longSilenceDone = false;
+    _afterthoughtUsedForTurn = false;
+  }
 
+  /// A promise to come back later becomes one single-shot opportunity.
+  void _schedulePendingThread(String text) {
+    if (_preview || !promiseLike(text)) return;
     final now = DateTime.now();
-    if (_proactiveDay == null || !_sameDay(_proactiveDay!, now)) {
-      _proactiveDay = DateTime(now.year, now.month, now.day);
-      _proactiveToday = 0;
-      _ignoredStreak = 0;
-    }
-
-    final decision = _initiative.next(
-      now: now,
-      lastInteractionAt: _lastInteraction,
-      lastProactiveAt: _lastProactiveAt,
-      ignoredStreak: _ignoredStreak,
-      sentToday: _proactiveToday,
-      meanMinutes: s.proactiveIdleMinutes,
-      shareEnabled: s.proactiveShareEnabled,
+    _pendingThreadDay = DateTime(now.year, now.month, now.day);
+    _pendingThreadTimer?.cancel();
+    _pendingThreadTimer = Timer(
+      Duration(minutes: 35 + _rng.nextInt(41)),
+      () {
+        _pendingThreadTimer = null;
+        final at = DateTime.now();
+        final day = DateTime(at.year, at.month, at.day);
+        if (_pendingThreadDay == null || _pendingThreadDay != day) return;
+        unawaited(_consider(InitiativeTrigger.pendingThread));
+      },
     );
-    debugPrint(
-      '[feiyu] initiative → ${decision.kind.name} in ${decision.delay.inMinutes}m (${decision.reason})',
-    );
-
-    if (decision.kind == InitiativeKind.silence) {
-      _initiativeTimer = Timer(decision.delay, _scheduleNextInitiative);
-      return;
-    }
-    _initiativeTimer = Timer(decision.delay, () => _maybeSpeakUp(decision.kind));
   }
 
-  static bool _sameDay(DateTime a, DateTime b) =>
-      a.year == b.year && a.month == b.month && a.day == b.day;
+  /// At most one long-silence check per day, six hours after the last message.
+  void _armLongSilence(DateTime now) {
+    _longSilenceTimer?.cancel();
+    if (_longSilenceDone) return;
+    _longSilenceTimer = Timer(const Duration(hours: 6), () {
+      _longSilenceTimer = null;
+      if (!mounted) return;
+      _rollDay(DateTime.now());
+      if (_longSilenceDone) return;
+      _longSilenceDone = true;
+      unawaited(_consider(InitiativeTrigger.longSilence));
+    });
+  }
+
+  /// A single small follow-up offer after she has already replied.
+  void _afterReplyOpportunities() {
+    if (_preview || _afterthoughtUsedForTurn) return;
+    if (_input.text.trim().isNotEmpty) return;
+    if (_rng.nextDouble() >= .30) return;
+    _afterthoughtUsedForTurn = true;
+    _afterthoughtTimer?.cancel();
+    _afterthoughtTimer = Timer(
+      Duration(minutes: 2 + _rng.nextInt(4)),
+      () {
+        _afterthoughtTimer = null;
+        unawaited(_consider(InitiativeTrigger.afterthought));
+      },
+    );
+  }
 
   String _sharePrompt() {
     final now = DateTime.now();
@@ -1815,6 +1883,14 @@ class _ChatPageState extends State<ChatPage> {
   static const String _chatNudge =
       '主人已经一段时间没说话了。用一句很短的话主动搭个话：可以接着刚才的话题，'
       '也可以随口分享一点自己的念头。不要问「你在吗」，不要客套，不要超过 30 字。';
+
+  static const String _vetoNudge =
+      '你要决定现在要不要主动开口。\n'
+      '只有在下面之一为真时才说话：\n'
+      '- 你记得的事和当下有关（时间、天气、他之前提到的安排）\n'
+      '- 他刚回来、离上一次聊天很久\n'
+      '- 你有具体想分享的东西\n'
+      '否则回答 SILENT。不要解释，只输出 SPEAK 或 SILENT。';
 
   static final RegExp _urlPattern = RegExp(
     r'''https?://[^\s<>'")\]}，。；！？]+''',
@@ -1839,17 +1915,70 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
-  Future<void> _maybeSpeakUp(InitiativeKind kind) async {
+  /// An event asked to speak; policy and the model veto still stand in the way.
+  ///
+  /// Every call counts toward the per-day opportunity cap *before* the veto,
+  /// so a broken provider cannot make her spin.
+  Future<void> _consider(InitiativeTrigger trigger) async {
+    if (_preview) return;
     final s = _settings;
-    if (s == null || !s.proactiveEnabled || _busy || !mounted) {
-      _scheduleNextInitiative();
-      return;
-    }
-    if (_messages.isEmpty) {
-      _scheduleNextInitiative();
-      return;
-    }
+    if (s == null || !s.proactiveEnabled) return;
+    if (!mounted || _busy || _messages.isEmpty) return;
+    final now = DateTime.now();
+    _rollDay(now);
+    if (inQuietHours(now)) return;
+    if (_proactiveToday >= 3 || _ignoredStreak >= 3) return;
+    if (_opportunitiesToday >= 6) return;
+    if (trigger == InitiativeTrigger.dayAnchor) _dayAnchorDone = true;
+    if (trigger == InitiativeTrigger.longSilence) _longSilenceDone = true;
 
+    _opportunitiesToday++;
+    final ok = await _veto(trigger);
+    if (!ok || !mounted || _busy) return;
+    await _speakUp(trigger);
+  }
+
+  /// Asks the model whether this opportunity is worth a message.
+  ///
+  /// Only an exact `SPEAK` (trimmed, any case) lets generation continue.
+  /// Anything else — SILENT, empty, timeout, error — stays silent.
+  Future<bool> _veto(InitiativeTrigger trigger) async {
+    final s = _settings;
+    if (s == null) return false;
+    final recent = _messages.where((m) => m.content.trim().isNotEmpty).toList();
+    if (recent.isEmpty) return false;
+    final tail = recent.length > 8 ? recent.sublist(recent.length - 8) : recent;
+    final last = _lastInteraction ?? _lastProactiveAt;
+    final minutes =
+        last == null ? 9999 : DateTime.now().difference(last).inMinutes;
+    final context = tail
+        .map((m) => '${m.role == 'user' ? '主人' : '我'}：${m.content}')
+        .join('\n');
+    final convo = <Map<String, dynamic>>[
+      {'role': 'system', 'content': _systemPrompt(s)},
+      {'role': 'user', 'content': '$context\n距上次说话：$minutes 分钟'},
+      {'role': 'system', 'content': _vetoNudge},
+    ];
+    try {
+      final target = Message('assistant', '');
+      final result = await _streamTurn(
+        s,
+        convo,
+        target,
+        maxTokens: 40,
+        allowTools: false,
+        reveal: false,
+      ).timeout(const Duration(seconds: 30));
+      return result.text.trim().toUpperCase() == 'SPEAK';
+    } catch (e) {
+      debugPrint('[feiyu] veto ${trigger.name} failed: $e');
+      return false;
+    }
+  }
+
+  Future<void> _speakUp(InitiativeTrigger trigger) async {
+    final s = _settings;
+    if (s == null) return;
     final recent = _messages
         .where((m) => m.content.trim().isNotEmpty)
         .toList()
@@ -1859,12 +1988,12 @@ class _ChatPageState extends State<ChatPage> {
         .reversed
         .map((m) => '${m.role == 'user' ? '主人' : '我'}：${m.content}')
         .join('\n');
-    if (recent.isEmpty) {
-      _scheduleNextInitiative();
-      return;
-    }
+    if (recent.isEmpty) return;
 
-    final isShare = kind == InitiativeKind.share;
+    final chatOnly = trigger == InitiativeTrigger.longSilence ||
+        trigger == InitiativeTrigger.dayAnchor;
+    final isShare =
+        !chatOnly && s.proactiveShareEnabled && _rng.nextDouble() < .45;
     try {
       setState(() => _busy = true);
       final target = Message('assistant', '');
@@ -1907,7 +2036,7 @@ class _ChatPageState extends State<ChatPage> {
 
       if (!mounted || said.isEmpty || isSilenceReply(said)) {
         if (mounted && said.isNotEmpty) {
-          debugPrint('[feiyu] proactive $kind chose SILENCE');
+          debugPrint('[feiyu] proactive ${trigger.name} chose SILENCE');
         }
         return;
       }
@@ -1933,7 +2062,6 @@ class _ChatPageState extends State<ChatPage> {
       // Proactive turns are best-effort.
     } finally {
       if (mounted) setState(() => _busy = false);
-      _scheduleNextInitiative();
     }
   }
 

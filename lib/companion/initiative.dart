@@ -1,124 +1,128 @@
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// What a proactive turn should do.
-enum InitiativeKind { chat, share, silence }
-
-/// A single decision from [InitiativePolicy].
+/// Why she might consider speaking up.
 ///
-/// [delay] is how long to wait from the moment [InitiativePolicy.next] was
-/// asked, [reason] is a short human-readable trace used only by debugPrint.
-class InitiativeDecision {
-  const InitiativeDecision(this.kind, this.delay, this.reason);
+/// A trigger is only an *opportunity*: the model still has to pass the veto
+/// gate before anything is said.
+enum InitiativeTrigger {
+  /// The app came back after a long pause.
+  reopen,
 
-  final InitiativeKind kind;
-  final Duration delay;
+  /// The user said something like "晚点再聊" and that time has come.
+  pendingThread,
+
+  /// A small follow-up offered shortly after she already replied.
+  afterthought,
+
+  /// The first real activity of a new local day.
+  dayAnchor,
+
+  /// Nobody has said anything (and she has not reached out) for hours.
+  longSilence,
+}
+
+/// A concrete chance to speak, produced by [pickOpportunity].
+class InitiativeOpportunity {
+  const InitiativeOpportunity(this.trigger, this.reason);
+
+  final InitiativeTrigger trigger;
+
+  /// Short human-readable trace, only used by debugPrint.
   final String reason;
 
   @override
-  String toString() => 'InitiativeDecision(${kind.name}, $delay, $reason)';
+  String toString() => 'InitiativeOpportunity(${trigger.name}, $reason)';
 }
 
-/// Decides when she may reach out, and whether to chat or share something.
+/// A pause of this long before resuming counts as "he was away".
+const Duration reopenGap = Duration(minutes: 40);
+
+/// Silence for this long (with no proactive message) is worth a check.
+const Duration longSilenceGap = Duration(hours: 6);
+
+/// True between 00:00 and 07:30 local time.
+bool inQuietHours(DateTime now) =>
+    now.hour < 7 || (now.hour == 7 && now.minute < 30);
+
+const List<String> _promiseMarkers = <String>[
+  '开会',
+  '晚点',
+  '等下',
+  '待会',
+  '回头',
+  '明天',
+  '睡觉',
+  '先忙',
+  '出门',
+  '上班',
+  '下班',
+  '吃饭',
+  '了再',
+  '再说',
+];
+
+/// True when the user's message promises to come back later.
+bool promiseLike(String userText) =>
+    _promiseMarkers.any(userText.contains);
+
+/// Picks the one opportunity that best matches the current state.
 ///
-/// The whole policy is pure: time is passed in and randomness comes from an
-/// injected [Random], so every branch can be unit-tested.
-class InitiativePolicy {
-  InitiativePolicy({required Random rng}) : _rng = rng;
+/// Pure: callers pass the clock and counters in, so every branch is testable.
+/// Returns `null` when nothing should even be considered.
+InitiativeOpportunity? pickOpportunity({
+  required DateTime now,
+  required DateTime? lastInteractionAt,
+  required DateTime? lastProactiveAt,
+  required int sentToday,
+  required int ignoredStreak,
+  required bool hadAfterthoughtForLastTurn,
+  required bool dayAnchorDone,
+  bool longSilenceDone = false,
+}) {
+  if (inQuietHours(now)) return null;
+  if (sentToday >= 3) return null;
+  if (ignoredStreak >= 3) return null;
 
-  final Random _rng;
-
-  static const Duration _cooldown = Duration(minutes: 40);
-  static const Duration _minDelay = Duration(minutes: 10);
-  static const double _shareChance = .45;
-  static const int _dailyCap = 3;
-  static const int _quietEndHour = 7;
-  static const int _quietEndMinute = 30;
-
-  InitiativeDecision next({
-    required DateTime now,
-    required DateTime? lastInteractionAt,
-    required DateTime? lastProactiveAt,
-    required int ignoredStreak,
-    required int sentToday,
-    required int meanMinutes,
-    required bool shareEnabled,
-  }) {
-    // 1. Quiet hours: silence until 07:30 plus 0..40 min of jitter.
-    if (_isQuiet(now)) {
-      final jitter = Duration(minutes: _rng.nextInt(41));
-      return InitiativeDecision(
-        InitiativeKind.silence,
-        _atLeastMin(_nextMorning(now).difference(now) + jitter),
-        'quiet hours until 07:30',
-      );
-    }
-
-    // 2. Three proactive messages a day is enough.
-    if (sentToday >= _dailyCap) {
-      return InitiativeDecision(
-        InitiativeKind.silence,
-        _nextMorning(now).difference(now),
-        'daily cap $_dailyCap/$_dailyCap, waiting for tomorrow',
-      );
-    }
-
-    // 3. Three unanswered proactive messages in a row: rest until tomorrow.
-    if (ignoredStreak >= 3) {
-      return InitiativeDecision(
-        InitiativeKind.silence,
-        _nextMorning(now).difference(now),
-        'ignored $ignoredStreak times, resting today',
-      );
-    }
-
-    final mean = meanMinutes.clamp(1, 24 * 60).toDouble();
-
-    // 4. Exponential sample with the given mean, clamped to 0.5..3 means.
-    final u = _rng.nextDouble().clamp(0.0, 0.999999);
-    var minutes = -mean * log(1 - u);
-    minutes = minutes.clamp(0.5 * mean, 3.0 * mean).toDouble();
-
-    // 5. Stretch the gap when previous nudges went unanswered.
-    minutes *= 1 + ignoredStreak;
-
-    var delay = Duration(milliseconds: (minutes * 60000).round());
-
-    // 6. Never sooner than 40 minutes after the previous proactive message.
-    if (lastProactiveAt != null) {
-      final untilCooldownEnd = lastProactiveAt.add(_cooldown).difference(now);
-      if (untilCooldownEnd > delay) delay = untilCooldownEnd;
-    }
-
-    // 7. Never promise anything sooner than 10 minutes.
-    delay = _atLeastMin(delay);
-
-    // 8. Sometimes share a real fetched link instead of just chatting.
-    final share = shareEnabled && _rng.nextDouble() < _shareChance;
-    return InitiativeDecision(
-      share ? InitiativeKind.share : InitiativeKind.chat,
-      delay,
-      'mean ${meanMinutes}m, ignored $ignoredStreak',
+  // He was gone for a while and has just come back.
+  if (lastInteractionAt != null &&
+      now.difference(lastInteractionAt) >= reopenGap) {
+    final minutes = now.difference(lastInteractionAt).inMinutes;
+    return InitiativeOpportunity(
+      InitiativeTrigger.reopen,
+      '离开了 $minutes 分钟又回来',
     );
   }
 
-  bool _isQuiet(DateTime now) =>
-      now.hour < _quietEndHour ||
-      (now.hour == _quietEndHour && now.minute < _quietEndMinute);
-
-  /// The next 07:30 strictly relevant to [now] (today when still before it).
-  DateTime _nextMorning(DateTime now) {
-    final today =
-        DateTime(now.year, now.month, now.day, _quietEndHour, _quietEndMinute);
-    if (now.isBefore(today)) return today;
-    return DateTime(
-        now.year, now.month, now.day + 1, _quietEndHour, _quietEndMinute);
+  // No proactive message for a long time today.
+  final sinceProactive =
+      lastProactiveAt == null ? null : now.difference(lastProactiveAt);
+  if (!longSilenceDone &&
+      (sinceProactive == null || sinceProactive >= longSilenceGap)) {
+    return const InitiativeOpportunity(
+      InitiativeTrigger.longSilence,
+      '很久没主动说话了',
+    );
   }
 
-  Duration _atLeastMin(Duration delay) =>
-      delay < _minDelay ? _minDelay : delay;
+  // First activity of a new day.
+  if (!dayAnchorDone) {
+    return const InitiativeOpportunity(
+      InitiativeTrigger.dayAnchor,
+      '今天第一次见到主人',
+    );
+  }
+
+  // A single small afterthought per assistant turn.
+  if (!hadAfterthoughtForLastTurn) {
+    return const InitiativeOpportunity(
+      InitiativeTrigger.afterthought,
+      '刚才那句话之后还想补一句',
+    );
+  }
+
+  return null;
 }
 
 /// Remembers which links she already shared, so a session never repeats one.

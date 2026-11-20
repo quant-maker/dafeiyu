@@ -1,161 +1,234 @@
-import 'dart:math';
-
 import 'package:feiyu/companion/initiative.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// All cases are deterministic: each policy owns an independent Random(42).
-InitiativePolicy _policy() => InitiativePolicy(rng: Random(42));
-
-InitiativeDecision _next(
+InitiativeOpportunity? _pick(
   DateTime now, {
   DateTime? lastInteractionAt,
   DateTime? lastProactiveAt,
-  int ignoredStreak = 0,
   int sentToday = 0,
-  int meanMinutes = 8,
-  bool shareEnabled = true,
+  int ignoredStreak = 0,
+  bool hadAfterthoughtForLastTurn = true,
+  bool dayAnchorDone = true,
+  bool longSilenceDone = true,
 }) =>
-    _policy().next(
+    pickOpportunity(
       now: now,
       lastInteractionAt: lastInteractionAt,
       lastProactiveAt: lastProactiveAt,
-      ignoredStreak: ignoredStreak,
       sentToday: sentToday,
-      meanMinutes: meanMinutes,
-      shareEnabled: shareEnabled,
+      ignoredStreak: ignoredStreak,
+      hadAfterthoughtForLastTurn: hadAfterthoughtForLastTurn,
+      dayAnchorDone: dayAnchorDone,
+      longSilenceDone: longSilenceDone,
     );
 
 void main() {
-  test('quiet hours silence until 07:30 plus up to 40m of jitter', () {
-    final now = DateTime(2026, 11, 20, 3);
-    final d = _next(now);
-    expect(d.kind, InitiativeKind.silence);
-    // 03:00 -> 07:30 is 270 minutes, jitter is 0..40.
-    expect(d.delay, greaterThanOrEqualTo(const Duration(minutes: 270)));
-    expect(d.delay, lessThanOrEqualTo(const Duration(minutes: 310)));
-    expect(d.reason, isNotEmpty);
-  });
+  group('quiet hours', () {
+    test('inQuietHours covers 00:00–07:29', () {
+      expect(inQuietHours(DateTime(2026, 11, 20, 0)), isTrue);
+      expect(inQuietHours(DateTime(2026, 11, 20, 3, 15)), isTrue);
+      expect(inQuietHours(DateTime(2026, 11, 20, 7, 29)), isTrue);
+      expect(inQuietHours(DateTime(2026, 11, 20, 7, 30)), isFalse);
+      expect(inQuietHours(DateTime(2026, 11, 20, 12)), isFalse);
+    });
 
-  test('daily cap of three silences until tomorrow morning', () {
-    final now = DateTime(2026, 11, 20, 10);
-    final d = _next(now, sentToday: 3);
-    expect(d.kind, InitiativeKind.silence);
-    // 10:00 -> next 07:30 is 21h30m.
-    expect(d.delay, const Duration(hours: 21, minutes: 30));
-    expect(d.reason, contains('cap'));
-  });
-
-  test('three ignored nudges rest until tomorrow morning', () {
-    final now = DateTime(2026, 11, 20, 10);
-    final d = _next(now, ignoredStreak: 3);
-    expect(d.kind, InitiativeKind.silence);
-    expect(d.delay, const Duration(hours: 21, minutes: 30));
-    expect(d.reason, contains('ignored'));
-  });
-
-  test('sampled delay stays inside 0.5..3 times the mean', () {
-    const mean = 60;
-    final policy = _policy();
-    final now = DateTime(2026, 11, 20, 10);
-    for (var i = 0; i < 50; i++) {
-      final d = policy.next(
-        now: now,
-        lastInteractionAt: null,
-        lastProactiveAt: null,
-        ignoredStreak: 0,
-        sentToday: 0,
-        meanMinutes: mean,
-        shareEnabled: false,
+    test('no opportunity during quiet hours', () {
+      final now = DateTime(2026, 11, 20, 3);
+      expect(
+        _pick(
+          now,
+          lastInteractionAt: now.subtract(const Duration(hours: 2)),
+          lastProactiveAt: now.subtract(const Duration(hours: 12)),
+          dayAnchorDone: false,
+          hadAfterthoughtForLastTurn: false,
+          longSilenceDone: false,
+        ),
+        isNull,
       );
-      expect(d.delay, greaterThanOrEqualTo(const Duration(minutes: 30)));
-      expect(d.delay, lessThanOrEqualTo(const Duration(minutes: 180)));
-    }
+    });
   });
 
-  test('never sooner than 40 minutes after the last proactive message', () {
-    final now = DateTime(2026, 11, 20, 10);
-    final policy = _policy();
-    for (var i = 0; i < 50; i++) {
-      final d = policy.next(
-        now: now,
-        lastInteractionAt: null,
-        lastProactiveAt: now.subtract(const Duration(minutes: 10)),
-        ignoredStreak: 0,
-        sentToday: 0,
-        meanMinutes: 8,
-        shareEnabled: false,
+  test('daily sent cap blocks every opportunity', () {
+    final now = DateTime(2026, 11, 20, 12);
+    expect(
+      _pick(
+        now,
+        lastInteractionAt: now.subtract(const Duration(hours: 2)),
+        lastProactiveAt: now.subtract(const Duration(hours: 12)),
+        sentToday: 3,
+        dayAnchorDone: false,
+        hadAfterthoughtForLastTurn: false,
+        longSilenceDone: false,
+      ),
+      isNull,
+    );
+  });
+
+  test('three ignored proactive nudges block everything', () {
+    final now = DateTime(2026, 11, 20, 12);
+    expect(
+      _pick(
+        now,
+        lastInteractionAt: now.subtract(const Duration(hours: 2)),
+        ignoredStreak: 3,
+        dayAnchorDone: false,
+        hadAfterthoughtForLastTurn: false,
+        longSilenceDone: false,
+      ),
+      isNull,
+    );
+  });
+
+  group('reopen boundary', () {
+    test('39 minutes away is not a reopen', () {
+      final now = DateTime(2026, 11, 20, 12);
+      final last = now.subtract(const Duration(minutes: 39));
+      expect(
+        _pick(
+          now,
+          lastInteractionAt: last,
+          lastProactiveAt: now.subtract(const Duration(hours: 1)),
+        )?.trigger,
+        isNot(InitiativeTrigger.reopen),
       );
-      expect(d.delay, greaterThanOrEqualTo(const Duration(minutes: 30)));
-    }
-  });
+    });
 
-  test('share is chosen only when enabled and the roll is below 0.45', () {
-    final now = DateTime(2026, 11, 20, 10);
-    final policy = _policy();
-    var shares = 0;
-    for (var i = 0; i < 100; i++) {
-      final d = policy.next(
-        now: now,
-        lastInteractionAt: null,
-        lastProactiveAt: null,
-        ignoredStreak: 0,
-        sentToday: 0,
-        meanMinutes: 60,
-        shareEnabled: true,
+    test('40 minutes away is a reopen', () {
+      final now = DateTime(2026, 11, 20, 12);
+      final last = now.subtract(const Duration(minutes: 40));
+      final o = _pick(
+        now,
+        lastInteractionAt: last,
+        lastProactiveAt: now.subtract(const Duration(hours: 1)),
       );
-      if (d.kind == InitiativeKind.share) shares++;
-    }
-    expect(shares, greaterThan(0));
-    expect(shares, lessThan(100));
+      expect(o?.trigger, InitiativeTrigger.reopen);
+      expect(o?.reason.trim(), isNotEmpty);
+    });
 
-    final talkOnly = _policy();
-    for (var i = 0; i < 50; i++) {
-      final d = talkOnly.next(
-        now: now,
-        lastInteractionAt: null,
-        lastProactiveAt: null,
-        ignoredStreak: 0,
-        sentToday: 0,
-        meanMinutes: 60,
-        shareEnabled: false,
+    test('longer away is still a reopen', () {
+      final now = DateTime(2026, 11, 20, 12);
+      final last = now.subtract(const Duration(hours: 3));
+      expect(
+        _pick(
+          now,
+          lastInteractionAt: last,
+          lastProactiveAt: now.subtract(const Duration(minutes: 5)),
+        )?.trigger,
+        InitiativeTrigger.reopen,
       );
-      expect(d.kind, InitiativeKind.chat);
-    }
+    });
   });
 
-  test('default mean (8m) still waits at least 10 minutes', () {
-    final policy = _policy();
-    final now = DateTime(2026, 11, 20, 10);
-    for (var i = 0; i < 50; i++) {
-      final d = policy.next(
-        now: now,
-        lastInteractionAt: null,
-        lastProactiveAt: null,
-        ignoredStreak: 0,
-        sentToday: 0,
-        meanMinutes: 8,
-        shareEnabled: false,
-      );
-      expect(d.kind, isNot(InitiativeKind.silence));
-      expect(d.delay, greaterThanOrEqualTo(const Duration(minutes: 10)));
-    }
+  test('longSilence after six hours without a proactive message', () {
+    final now = DateTime(2026, 11, 20, 12);
+    final o = _pick(
+      now,
+      lastInteractionAt: now.subtract(const Duration(minutes: 5)),
+      lastProactiveAt: now.subtract(const Duration(hours: 6)),
+      dayAnchorDone: false,
+      longSilenceDone: false,
+    );
+    expect(o?.trigger, InitiativeTrigger.longSilence);
+    expect(o?.reason.trim(), isNotEmpty);
   });
 
-  test('ignored streaks stretch the same random sample', () {
-    final now = DateTime(2026, 11, 20, 10);
-    final calm = _next(now, meanMinutes: 60);
-    final ignored = _next(now, meanMinutes: 60, ignoredStreak: 2);
-    expect(ignored.delay, calm.delay * 3);
+  test('longSilence fires at most once per day', () {
+    final now = DateTime(2026, 11, 20, 12);
+    final o = _pick(
+      now,
+      lastInteractionAt: now.subtract(const Duration(minutes: 5)),
+      lastProactiveAt: now.subtract(const Duration(hours: 7)),
+      longSilenceDone: true,
+    );
+    expect(o, isNull);
   });
 
-  test('every decision carries a non-empty reason', () {
-    final now = DateTime(2026, 11, 20, 10);
-    final chat = _next(now, meanMinutes: 60);
-    final share = _next(now, meanMinutes: 60);
-    final quiet = _next(DateTime(2026, 11, 20, 2));
-    for (final d in <InitiativeDecision>[chat, share, quiet]) {
-      expect(d.reason.trim(), isNotEmpty);
-    }
+  test('dayAnchor on the first activity of the day', () {
+    final now = DateTime(2026, 11, 20, 9);
+    final o = _pick(
+      now,
+      lastInteractionAt: now.subtract(const Duration(minutes: 1)),
+      lastProactiveAt: now.subtract(const Duration(minutes: 30)),
+      dayAnchorDone: false,
+    );
+    expect(o?.trigger, InitiativeTrigger.dayAnchor);
+    expect(o?.reason.trim(), isNotEmpty);
+  });
+
+  test('dayAnchor fires at most once per day', () {
+    final now = DateTime(2026, 11, 20, 9);
+    final o = _pick(
+      now,
+      lastInteractionAt: now.subtract(const Duration(minutes: 1)),
+      lastProactiveAt: now.subtract(const Duration(minutes: 30)),
+      dayAnchorDone: true,
+    );
+    expect(o, isNull);
+  });
+
+  test('afterthought is offered at most once per assistant turn', () {
+    final now = DateTime(2026, 11, 20, 9);
+    final offered = _pick(
+      now,
+      lastInteractionAt: now.subtract(const Duration(minutes: 1)),
+      lastProactiveAt: now.subtract(const Duration(minutes: 30)),
+      hadAfterthoughtForLastTurn: false,
+    );
+    expect(offered?.trigger, InitiativeTrigger.afterthought);
+
+    final used = _pick(
+      now,
+      lastInteractionAt: now.subtract(const Duration(minutes: 1)),
+      lastProactiveAt: now.subtract(const Duration(minutes: 30)),
+      hadAfterthoughtForLastTurn: true,
+    );
+    expect(used, isNull);
+  });
+
+  group('promiseLike', () {
+    test('detects future-tense promises', () {
+      for (final phrase in <String>[
+        '我下午要开会',
+        '晚点聊',
+        '等下回来找你',
+        '待会再说',
+        '回头说',
+        '明天见',
+        '我先去睡觉了',
+        '先忙一会',
+        '出门一趟',
+        '上班呢',
+        '下班再说',
+        '吃饭去了再聊',
+      ]) {
+        expect(promiseLike(phrase), isTrue, reason: phrase);
+      }
+    });
+
+    test('does not flag ordinary chatter', () {
+      for (final phrase in <String>[
+        '今天天气不错',
+        '你好呀',
+        '我正在看你发的图',
+        '这个颜色好看吗',
+        '我有点累了',
+        '哈哈哈',
+      ]) {
+        expect(promiseLike(phrase), isFalse, reason: phrase);
+      }
+    });
+  });
+
+  test('nothing applies -> null', () {
+    final now = DateTime(2026, 11, 20, 12);
+    expect(
+      _pick(
+        now,
+        lastInteractionAt: now.subtract(const Duration(minutes: 2)),
+        lastProactiveAt: now.subtract(const Duration(minutes: 30)),
+      ),
+      isNull,
+    );
   });
 
   test('SILENCE marker and fresh-link checks', () {
