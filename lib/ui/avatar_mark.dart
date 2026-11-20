@@ -23,7 +23,7 @@ class AvatarMark extends StatelessWidget {
   /// Edge length of the square mark in logical pixels.
   final double size;
 
-  /// Whether to draw the 1px gold rim.
+  /// Whether to draw the 1px jade rim.
   final bool ring;
 
   /// Whether to wrap the mark in the soft primary glow.
@@ -43,7 +43,10 @@ class AvatarMark extends StatelessWidget {
         shape: BoxShape.circle,
         color: AppPalette.ink,
         border: ring
-            ? Border.all(color: AppPalette.primary.withValues(alpha: .35))
+            ? Border.all(
+                color: AppPalette.primary.withValues(alpha: .30),
+                width: 1,
+              )
             : null,
       ),
       child: ClipOval(child: content),

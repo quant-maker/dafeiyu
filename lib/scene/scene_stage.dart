@@ -178,7 +178,7 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
     return Stack(
       fit: StackFit.expand,
       children: [
-        const ColoredBox(color: Color(0xFF0A0F18)),
+        const ColoredBox(color: Color(0xFF0B0E10)),
         if (image != null)
           Image.asset(
             image,
@@ -250,8 +250,8 @@ class _SceneStageState extends State<SceneStage> with TickerProviderStateMixin {
                     center: Alignment(-.7, .25),
                     radius: .95,
                     colors: [
-                      const Color(0xFF8FD0FF).withValues(alpha: .04 + pulse * .03),
-                      const Color(0x008FD0FF),
+                      const Color(0xFF8FD3C4).withValues(alpha: .04 + pulse * .03),
+                      const Color(0x008FD3C4),
                     ],
                   ),
                 ),
@@ -307,7 +307,7 @@ class _RoomPainter extends CustomPainter {
         ..shader = const LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Color(0xFF20304A), Color(0xFF172235), Color(0xFF121A28)],
+          colors: [Color(0xFF17302C), Color(0xFF122420), Color(0xFF0E1917)],
         ).createShader(Rect.fromLTWH(0, 0, w, horizon)),
     );
 
@@ -335,13 +335,13 @@ class _RoomPainter extends CustomPainter {
         ..shader = const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFF8FD0FF), Color(0xFF4E86C6), Color(0xFF2B4A72)],
+          colors: [Color(0xFF8FD3C4), Color(0xFF4F9E8F), Color(0xFF23423D)],
         ).createShader(win),
     );
     canvas.drawRect(
       win,
       Paint()
-        ..color = const Color(0xFF0E1622)
+        ..color = const Color(0xFF0B1412)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 5,
     );
@@ -349,7 +349,7 @@ class _RoomPainter extends CustomPainter {
     final sofa = Rect.fromLTWH(w * .14, h * .58, w * .52, h * .20);
     canvas.drawRRect(
       RRect.fromRectAndRadius(sofa, const Radius.circular(22)),
-      Paint()..color = const Color(0xFF2B3A52),
+      Paint()..color = const Color(0xFF243A35),
     );
 
     final lampX = w * .10;
