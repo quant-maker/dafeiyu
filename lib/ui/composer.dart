@@ -107,7 +107,7 @@ class Composer extends StatelessWidget {
   }
 }
 
-/// The 42px gradient send button with a subtle press-in feedback.
+/// The 42px outlined send button with a subtle press-in feedback.
 class _PressableSend extends StatefulWidget {
   const _PressableSend({required this.onSend});
 
@@ -140,14 +140,18 @@ class _PressableSendState extends State<_PressableSend> {
           child: Container(
             width: 42,
             height: 42,
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               shape: BoxShape.circle,
-              gradient: AppGradients.send,
+              color: AppPalette.ink,
+              border: Border.all(
+                color: AppPalette.primary.withValues(alpha: .55),
+                width: 1.5,
+              ),
             ),
             child: const Icon(
-              Icons.send_rounded,
-              size: 20,
-              color: AppPalette.primaryInk,
+              Icons.send_outlined,
+              size: 19,
+              color: AppPalette.primary,
             ),
           ),
         ),
