@@ -14,6 +14,7 @@ abstract final class AppTheme {
     ).copyWith(
       primary: AppPalette.primary,
       surface: AppPalette.surface,
+      secondary: AppPalette.accent,
       error: AppPalette.danger,
     );
 
