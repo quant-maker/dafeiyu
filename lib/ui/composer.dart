@@ -144,18 +144,67 @@ class _PressableSendState extends State<_PressableSend> {
               shape: BoxShape.circle,
               color: AppPalette.ink,
               border: Border.all(
-                color: AppPalette.primary.withValues(alpha: .55),
-                width: 1.5,
+                color: AppPalette.primary.withValues(alpha: .35),
+                width: 1,
               ),
             ),
-            child: const Icon(
-              Icons.send_outlined,
-              size: 19,
-              color: AppPalette.primary,
+            child: const SizedBox(
+              width: 22,
+              height: 22,
+              child: CustomPaint(
+                painter: _SendPlanePainter(color: AppPalette.primary),
+              ),
             ),
           ),
         ),
       ),
     );
   }
+}
+
+/// Draws a Feishu-like paper plane with the nose pointing to the top-right.
+///
+/// Drawn entirely in code so the control no longer depends on the Material
+/// icon font being present in the web build.
+class _SendPlanePainter extends CustomPainter {
+  const _SendPlanePainter({required this.color});
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Path plane = Path()
+      ..moveTo(20.2, 2.0)
+      ..lineTo(2.2, 10.4)
+      ..lineTo(9.4, 12.6)
+      ..lineTo(11.4, 19.8)
+      ..lineTo(13.4, 13.4)
+      ..close();
+
+    // Lay down the dark disc colour first so the crease does not read as a
+    // floating line through the silhouette.
+    final Paint fill = Paint()
+      ..style = PaintingStyle.fill
+      ..color = AppPalette.ink;
+    canvas.drawPath(plane, fill);
+
+    final Paint stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..color = color
+      ..strokeWidth = 1.6
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round
+      ..isAntiAlias = true;
+
+    canvas.drawPath(plane, stroke);
+
+    final Path crease = Path()
+      ..moveTo(20.2, 2.0)
+      ..lineTo(9.9, 12.9);
+    canvas.drawPath(crease, stroke);
+  }
+
+  @override
+  bool shouldRepaint(covariant _SendPlanePainter oldDelegate) =>
+      oldDelegate.color != color;
 }
