@@ -146,3 +146,62 @@ The settings page corners sample exactly `(5, 4, 3)` = `#050403`, the new `AppPa
 - Server left running on port 8090 for the user; PID **11724** in `.tools-tmp/server-8090.pid`.
 - `build/`, `.tools-tmp/`, `.flutter-plugins-dependencies` were **not** staged/committed.
 - Commit: `docs(ui): capture evidence for the gold theme and avatar upload`.
+
+## Jade + whale re-theme
+
+Re-ran the full pipeline after `a8401b5` (jade palette), `469d55f` (whale avatar + scene retune) and `caa30d2` (outlined send button).
+
+### Gates
+
+- `flutter analyze` → **No issues found** (exit 0)
+- `flutter test` → **59 passed** (`All tests passed!`, exit 0)
+- `flutter build web --release --base-href /` → exit 0 (built `build\web`, ~40 s)
+
+### Server
+
+- Old PID 11724 stopped; new server PID **20460** (`.tools-tmp/server-8090.pid`), left running.
+- `GET /` → 200, `GET /?seed=1` → 200.
+- Served `main.dart.js` SHA256 `86a1c6bc2f0f387a01f79eb939fa0b6b1ea25a028df8209712a68e9b03fde671` == disk (3,090,022 B).
+- `GET /assets/assets/avatar/default_avatar.svg` → 200, 1,645 B, SHA256 `13a5b1907881a52dd7f47e10f20a33141f9e6bdd3a45e1c4f01bf10f6dbef969` == disk.
+
+### Bundle proves the new theme
+
+- Jade `#8FD3C4` = `0.5607843137254902, 0.8274509803921568, 0.7686274509803922` → **present (3×)**.
+- Old gold `#E0B65A` triple `0.8784313725490196, 0.7137254901960784, 0.35294117647058826` → **absent**; gold-only channels `0.7137254901960784` / `0.35294117647058826` also absent. (The bare `0.8784313725490196` red channel still occurs 6× — all Flutter framework greys/lavenders such as `0.878×3` and `0.9059, 0.878, 0.9254`, never the gold triple.)
+- Warm/mint/primaryDeep golds (`#F2C879`, `#E07A4A`, `#B9A46B`, `#A9762A`) all absent.
+
+### Browser QA (`.tools-tmp/jade-qa.mjs`)
+
+Chromium via Playwright `channel: 'chrome', headless: true`; fresh 390×844 contexts with `localStorage.clear()`.
+
+| Section | Viewport / wait | Result |
+|---|---|---|
+| A empty | 390×844, 7 s | overflow scroll **390** / client **390** (no horizontal overflow) |
+| B seed | 390×844, 7 s | `/ ?seed=1` rendered |
+| C settings | click header `(367,44)`, 1.5 s | AX tree exposes **头像** + **从相册选择** |
+| D wide | 1280×800, 6 s | overflow 1280 / 1280 |
+| E send crop | A page, clip `{x:300,y:745,w:90,h:90}` | 90×90 send button |
+
+- Console/page errors: `empty=[] seed=[] settings=[] wide=[]` → **0**.
+- External `https://api.deepseek.com/v1/models` fulfilled locally (`externalIntercepts`), so the settings CORS error never surfaced.
+- Default avatar SVG responded 200 in every section.
+
+### Screenshots (`.omo/evidence/ui-redesign/shots/`)
+
+| File | Bytes |
+|---|---|
+| `jade-empty-390x844.png` | 271,384 |
+| `jade-seed-390x844.png` | 208,989 |
+| `jade-settings-390x844.png` | 54,050 |
+| `jade-wide-1280x800.png` | 672,191 |
+| `jade-composer-send-390x844.png` | 5,280 |
+
+### Pixel proof (sampled every 2nd pixel, .NET bitmap)
+
+Gold-ish pixels (`#E0B65A` ±tolerance): **0** in all five screenshots. Dominant surfaces match the jade tokens exactly — ink `#050607` = `(5,6,7)`, bubbleSurface `(19,24,27)`, bubbleMine `(26,34,38)` — with jade accents present (`(132,197,183)` / `(143,211,196)`). No navy background.
+
+### Cleanup / state
+
+- `build/`, `.tools-tmp/`, `.flutter-plugins-dependencies` not staged.
+- Server left running on 8090, PID **20460**.
+- Commit: `docs(ui): capture jade and whale evidence`.
