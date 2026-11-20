@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -13,6 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
+import 'companion/initiative.dart';
 import 'comfy/comfy.dart';
 import 'comfy/comfy_page.dart';
 import 'feeds/footprints.dart';
@@ -120,6 +122,7 @@ class Settings {
   String? userAvatar;
   bool memoryEnabled;
   bool proactiveEnabled;
+  bool proactiveShareEnabled;
   bool sceneEnabled;
   double sceneDim;
   String sceneImage;
@@ -155,6 +158,7 @@ class Settings {
     this.userAvatar,
     this.memoryEnabled = true,
     this.proactiveEnabled = false,
+    this.proactiveShareEnabled = true,
     this.sceneEnabled = true,
     this.sceneDim = .42,
     this.sceneImage = '',
@@ -210,6 +214,7 @@ class Settings {
       userAvatar: rawUserAvatar.isEmpty ? null : rawUserAvatar,
       memoryEnabled: j['memoryEnabled'] as bool? ?? true,
       proactiveEnabled: j['proactiveEnabled'] as bool? ?? false,
+      proactiveShareEnabled: j['proactiveShareEnabled'] as bool? ?? true,
       sceneEnabled: j['sceneEnabled'] as bool? ?? true,
       sceneDim: (j['sceneDim'] as num?)?.toDouble() ?? .42,
       sceneImage: (j['sceneImage'] ?? '') as String? ?? '',
@@ -261,6 +266,7 @@ class Settings {
           'userAvatar': userAvatar!,
         'memoryEnabled': memoryEnabled,
         'proactiveEnabled': proactiveEnabled,
+        'proactiveShareEnabled': proactiveShareEnabled,
         'sceneEnabled': sceneEnabled,
         'sceneDim': sceneDim,
         'sceneImage': sceneImage,
@@ -552,8 +558,16 @@ class _ChatPageState extends State<ChatPage> {
   String _activity = '';
   DateTime _revealStart = DateTime.now();
   static const _charsPerSecond = 46.0;
-  Timer? _idleTimer;
-  int _proactiveCount = 0;
+  final Random _rng = Random();
+  late final InitiativePolicy _initiative = InitiativePolicy(rng: _rng);
+  SharedUrlStore _sharedUrls = SharedUrlStore.empty();
+  Timer? _initiativeTimer;
+  Timer? _ignoredTimer;
+  DateTime? _lastInteraction;
+  DateTime? _lastProactiveAt;
+  DateTime? _proactiveDay;
+  int _proactiveToday = 0;
+  int _ignoredStreak = 0;
   bool _showJump = false;
   // debug-only preview, never persisted
   bool _preview = false;
@@ -563,11 +577,17 @@ class _ChatPageState extends State<ChatPage> {
     super.initState();
     _preview = kIsWeb && Uri.base.queryParameters['seed'] == '1';
     _scroll.addListener(_onScroll);
+    _input.addListener(_noteInteraction);
+    SharedUrlStore.load().then((store) {
+      if (mounted) _sharedUrls = store;
+    }).catchError((Object e) {
+      debugPrint('[feiyu] shared links load FAILED: $e');
+    });
     Settings.load().then((s) {
       debugPrint('[feiyu] settings loaded base=${s.baseUrl} model=${s.model} keyLen=${s.apiKey.length}');
       if (mounted) {
         setState(() => _settings = s);
-        _resetIdleTimer();
+        _scheduleNextInitiative();
       }
     }).catchError((Object e, StackTrace st) {
       debugPrint('[feiyu] settings load FAILED: $e');
@@ -626,7 +646,9 @@ class _ChatPageState extends State<ChatPage> {
     final local = _localTts;
     if (local != null) unawaited(local.stop());
     _client?.close();
-    _idleTimer?.cancel();
+    _initiativeTimer?.cancel();
+    _ignoredTimer?.cancel();
+    _input.removeListener(_noteInteraction);
     _input.dispose();
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
@@ -665,6 +687,7 @@ class _ChatPageState extends State<ChatPage> {
     if (s != null) {
       await s.save();
       setState(() => _settings = s);
+      _scheduleNextInitiative();
     }
   }
 
@@ -1314,6 +1337,7 @@ class _ChatPageState extends State<ChatPage> {
       }
     }
     _input.clear();
+    _noteUserMessage();
     unawaited(_tts.stop());
     setState(() {
       _error = null;
@@ -1409,7 +1433,7 @@ class _ChatPageState extends State<ChatPage> {
           unawaited(_speak(target.content));
         }
         unawaited(_maybeSummarize(s));
-        _resetIdleTimer();
+        _scheduleNextInitiative();
       }
     }
     return target.content.trim();
@@ -1720,20 +1744,111 @@ class _ChatPageState extends State<ChatPage> {
 
   // ---------------- proactive ----------------
 
-  void _resetIdleTimer() {
-    if (_preview) return;
-    _idleTimer?.cancel();
-    final s = _settings;
-    if (s == null || !s.proactiveEnabled) return;
-    if (_proactiveCount >= 3) return;
-    if (_messages.isEmpty) return;
-    _idleTimer = Timer(Duration(minutes: s.proactiveIdleMinutes), _maybeSpeakUp);
+  /// Typing or focusing the composer counts as presence: note it and push the
+  /// next possible nudge out, but do not clear an ignored streak (only a sent
+  /// message does that).
+  void _noteInteraction() {
+    _lastInteraction = DateTime.now();
+    _scheduleNextInitiative();
   }
 
-  Future<void> _maybeSpeakUp() async {
+  /// The user actually sent something: forgive past silence and restart.
+  void _noteUserMessage() {
+    _lastInteraction = DateTime.now();
+    _ignoredStreak = 0;
+    _ignoredTimer?.cancel();
+    _ignoredTimer = null;
+    _initiativeTimer?.cancel();
+    _scheduleNextInitiative();
+  }
+
+  void _scheduleNextInitiative() {
+    if (_preview) return;
+    _initiativeTimer?.cancel();
     final s = _settings;
-    if (s == null || !s.proactiveEnabled || _busy || !mounted) return;
-    if (_proactiveCount >= 3) return;
+    if (s == null || !s.proactiveEnabled) return;
+    if (_messages.isEmpty) return;
+
+    final now = DateTime.now();
+    if (_proactiveDay == null || !_sameDay(_proactiveDay!, now)) {
+      _proactiveDay = DateTime(now.year, now.month, now.day);
+      _proactiveToday = 0;
+      _ignoredStreak = 0;
+    }
+
+    final decision = _initiative.next(
+      now: now,
+      lastInteractionAt: _lastInteraction,
+      lastProactiveAt: _lastProactiveAt,
+      ignoredStreak: _ignoredStreak,
+      sentToday: _proactiveToday,
+      meanMinutes: s.proactiveIdleMinutes,
+      shareEnabled: s.proactiveShareEnabled,
+    );
+    debugPrint(
+      '[feiyu] initiative → ${decision.kind.name} in ${decision.delay.inMinutes}m (${decision.reason})',
+    );
+
+    if (decision.kind == InitiativeKind.silence) {
+      _initiativeTimer = Timer(decision.delay, _scheduleNextInitiative);
+      return;
+    }
+    _initiativeTimer = Timer(decision.delay, () => _maybeSpeakUp(decision.kind));
+  }
+
+  static bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  String _sharePrompt() {
+    final now = DateTime.now();
+    final hh = now.hour.toString().padLeft(2, '0');
+    final mm = now.minute.toString().padLeft(2, '0');
+    return '现在 $hh:$mm。你可以分享一件新鲜事，但要先用 fetch_url 真的取一次，'
+        '标题和链接必须来自真实返回，不许编造。\n'
+        '来源（任选其一）：\n'
+        '- https://hacker-news.firebaseio.com/v0/topstories.json\n'
+        '- https://www.v2ex.com/api/topics/hot.json\n'
+        '- https://api.github.com/search/repositories?q=created:%3E2026-11-01&sort=stars&per_page=10\n'
+        '挑一条他会感兴趣的，用两句话说出来并附链接。取不到、或没什么想说的，只回复 SILENCE。';
+  }
+
+  static const String _chatNudge =
+      '主人已经一段时间没说话了。用一句很短的话主动搭个话：可以接着刚才的话题，'
+      '也可以随口分享一点自己的念头。不要问「你在吗」，不要客套，不要超过 30 字。';
+
+  static final RegExp _urlPattern = RegExp(
+    r'''https?://[^\s<>'")\]}，。；！？]+''',
+    caseSensitive: false,
+  );
+
+  static List<String> _urlsIn(String text) => _urlPattern
+      .allMatches(text)
+      .map((m) => m.group(0)!.replaceAll(RegExp(r'[.,;!?]+$'), ''))
+      .where((u) => u.isNotEmpty)
+      .toList();
+
+  void _startIgnoredCountdown() {
+    final firedAt = DateTime.now();
+    _ignoredTimer?.cancel();
+    _ignoredTimer = Timer(const Duration(minutes: 10), () {
+      if (!mounted) return;
+      final last = _lastInteraction;
+      if (last != null && last.isAfter(firedAt)) return;
+      _ignoredStreak++;
+      debugPrint('[feiyu] no reply in 10m, ignored streak → $_ignoredStreak');
+    });
+  }
+
+  Future<void> _maybeSpeakUp(InitiativeKind kind) async {
+    final s = _settings;
+    if (s == null || !s.proactiveEnabled || _busy || !mounted) {
+      _scheduleNextInitiative();
+      return;
+    }
+    if (_messages.isEmpty) {
+      _scheduleNextInitiative();
+      return;
+    }
 
     final recent = _messages
         .where((m) => m.content.trim().isNotEmpty)
@@ -1744,46 +1859,81 @@ class _ChatPageState extends State<ChatPage> {
         .reversed
         .map((m) => '${m.role == 'user' ? '主人' : '我'}：${m.content}')
         .join('\n');
-    if (recent.isEmpty) return;
+    if (recent.isEmpty) {
+      _scheduleNextInitiative();
+      return;
+    }
 
+    final isShare = kind == InitiativeKind.share;
     try {
       setState(() => _busy = true);
-      final base = s.baseUrl.endsWith('/') ? s.baseUrl.substring(0, s.baseUrl.length - 1) : s.baseUrl;
-      final res = await http
-          .post(
-            Uri.parse('$base/chat/completions'),
-            headers: {'content-type': 'application/json', 'authorization': 'Bearer ${s.apiKey}'},
-            body: jsonEncode({
-              'model': s.model,
-              'stream': false,
-              'messages': [
-                {'role': 'system', 'content': _systemPrompt(s)},
-                {'role': 'user', 'content': recent},
-                {
-                  'role': 'system',
-                  'content': '主人已经一段时间没说话了。用一句很短的话主动搭个话：可以接着刚才的话题，'
-                      '也可以随口分享一点自己的念头。不要问「你在吗」，不要客套，不要超过 30 字。'
-                },
-              ],
-            }),
-          )
-          .timeout(const Duration(seconds: 30));
-      if (res.statusCode != 200) return;
-      final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
-      final raw = ((j['choices'] as List).first['message'] as Map)['content'] as String? ?? '';
-      final said = raw.trim();
-      if (said.isEmpty || !mounted) return;
+      final target = Message('assistant', '');
+      final convo = <Map<String, dynamic>>[
+        {'role': 'system', 'content': _systemPrompt(s)},
+        {'role': 'user', 'content': recent},
+        {
+          'role': 'system',
+          'content': isShare ? _sharePrompt() : _chatNudge,
+        },
+      ];
+
+      var said = '';
+      for (var round = 0; round < 4; round++) {
+        final result = await _streamTurn(s, convo, target);
+        said = result.text.trim();
+        if (result.toolCalls.isEmpty) break;
+        convo.add({
+          'role': 'assistant',
+          'content': result.text,
+          'tool_calls': result.toolCalls,
+        });
+        for (final call in result.toolCalls) {
+          final fn = (call['function'] ?? const {}) as Map;
+          final name = (fn['name'] ?? '') as String;
+          final rawArgs = (fn['arguments'] ?? '{}') as String;
+          final id = (call['id'] ?? '') as String;
+          String output;
+          try {
+            final args = (jsonDecode(rawArgs.isEmpty ? '{}' : rawArgs) as Map)
+                .cast<String, dynamic>();
+            output = await _execTool(name, args);
+          } catch (e) {
+            output = '工具执行失败：$e';
+          }
+          convo.add({'role': 'tool', 'tool_call_id': id, 'content': output});
+          if (mounted) setState(() => _activity = '');
+        }
+      }
+
+      if (!mounted || said.isEmpty || isSilenceReply(said)) {
+        if (mounted && said.isNotEmpty) {
+          debugPrint('[feiyu] proactive $kind chose SILENCE');
+        }
+        return;
+      }
+
+      final urls = isShare ? _urlsIn(said) : const <String>[];
+      if (isShare && !hasFreshLink(said, _sharedUrls.urls)) {
+        debugPrint('[feiyu] share skipped: no new link ($urls)');
+        return;
+      }
+
       setState(() {
-        _proactiveCount++;
+        _proactiveToday++;
+        _lastProactiveAt = DateTime.now();
         _messages.add(Message('assistant', said));
       });
       unawaited(ChatStore.save(_messages));
       _scrollToEnd();
+      if (isShare) {
+        unawaited(_sharedUrls.remember(urls));
+      }
+      _startIgnoredCountdown();
     } catch (_) {
-      // Proactive chat is best-effort.
+      // Proactive turns are best-effort.
     } finally {
       if (mounted) setState(() => _busy = false);
-      _resetIdleTimer();
+      _scheduleNextInitiative();
     }
   }
 
@@ -2258,19 +2408,24 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Widget _composer() {
-    return Composer(
-      controller: _input,
-      busy: _busy,
-      listening: _listening,
-      onImage: _imageSheet,
-      onMic: _toggleVoice,
-      onSend: _send,
-      onStop: _stop,
-      onSubmitted: (_) => _send(),
-      hint: _listening ? '正在听…' : '和大肥鱼说点什么…',
-      inCall: _inCall,
-      onCall: _enterCall,
-      onHangup: _hangup,
+    return Focus(
+      onFocusChange: (hasFocus) {
+        if (hasFocus) _noteInteraction();
+      },
+      child: Composer(
+        controller: _input,
+        busy: _busy,
+        listening: _listening,
+        onImage: _imageSheet,
+        onMic: _toggleVoice,
+        onSend: _send,
+        onStop: _stop,
+        onSubmitted: (_) => _send(),
+        hint: _listening ? '正在听…' : '和大肥鱼说点什么…',
+        inCall: _inCall,
+        onCall: _enterCall,
+        onHangup: _hangup,
+      ),
     );
   }
 }
@@ -2291,6 +2446,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late bool _memoryEnabled;
   late List<String> _facts;
   late bool _proactiveEnabled;
+  late bool _proactiveShareEnabled;
   late bool _sceneEnabled;
   late double _sceneDim;
   late String _sceneImage;
@@ -2338,6 +2494,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _memoryEnabled = widget.initial.memoryEnabled;
     _facts = List.of(widget.memory.facts);
     _proactiveEnabled = widget.initial.proactiveEnabled;
+    _proactiveShareEnabled = widget.initial.proactiveShareEnabled;
     _sceneEnabled = widget.initial.sceneEnabled;
     _sceneDim = widget.initial.sceneDim;
     _sceneImage = widget.initial.sceneImage;
@@ -2495,6 +2652,7 @@ class _SettingsPageState extends State<SettingsPage> {
       memoryEnabled: _memoryEnabled,
       proactiveEnabled: _proactiveEnabled,
       proactiveIdleMinutes: _proactiveIdleMinutes,
+      proactiveShareEnabled: _proactiveShareEnabled,
       sceneEnabled: _sceneEnabled,
       sceneDim: _sceneDim,
       sceneImage: _sceneImage,
@@ -3133,31 +3291,20 @@ class _SettingsPageState extends State<SettingsPage> {
               _SettingsSwitch(
                 title: '主动开口',
                 subtitle: _proactiveEnabled
-                    ? '你有 $_proactiveIdleMinutes 分钟没说话，它会自己搭一句（只在 App 打开时，每场最多 3 次）'
+                    ? '你不说话时，它会按自己的节奏主动搭话'
                     : '打开后，你不说话时它会主动找你',
                 value: _proactiveEnabled,
                 onChanged: (v) => setState(() => _proactiveEnabled = v),
               ),
-              if (_proactiveEnabled)
-                Padding(
-                  padding: const EdgeInsets.only(left: 4, bottom: 8),
-                  child: Row(
-                    children: [
-                      Text('空闲触发：', style: AppType.caption.copyWith(color: AppPalette.text3)),
-                      Expanded(
-                        child: Slider(
-                          value: _proactiveIdleMinutes.toDouble().clamp(2, 60),
-                          min: 2,
-                          max: 60,
-                          divisions: 29,
-                          label: '$_proactiveIdleMinutes 分钟',
-                          onChanged: (v) => setState(() => _proactiveIdleMinutes = v.round()),
-                        ),
-                      ),
-                      Text('$_proactiveIdleMinutes 分钟', style: AppType.caption.copyWith(color: AppPalette.text2)),
-                    ],
-                  ),
+              if (_proactiveEnabled) ...[
+                const SizedBox(height: 10),
+                _SettingsSwitch(
+                  title: '主动分享新鲜事',
+                  subtitle: '会真的上网找一条，而不是编',
+                  value: _proactiveShareEnabled,
+                  onChanged: (v) => setState(() => _proactiveShareEnabled = v),
                 ),
+              ],
             ],
           ),
           const SizedBox(height: 16),
