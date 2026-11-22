@@ -239,4 +239,27 @@ void main() {
     expect(hasFreshLink('看这个 https://a.com/x', {'https://a.com/x'}), isFalse);
     expect(hasFreshLink('没有链接', <String>{}), isFalse);
   });
+
+  group('parseVetoReply', () {
+    test('SILENT maps to silent', () {
+      expect(parseVetoReply('SILENT'), InitiativeMode.silent);
+    });
+
+    test('lowercase speak:chat maps to chat', () {
+      expect(parseVetoReply('speak:chat'), InitiativeMode.chat);
+    });
+
+    test('SPEAK:SHARE maps to share', () {
+      expect(parseVetoReply('SPEAK:SHARE'), InitiativeMode.share);
+    });
+
+    test('bare SPEAK maps to chat', () {
+      expect(parseVetoReply('SPEAK'), InitiativeMode.chat);
+    });
+
+    test('garbage or empty maps to silent', () {
+      expect(parseVetoReply(''), InitiativeMode.silent);
+      expect(parseVetoReply('我不知道'), InitiativeMode.silent);
+    });
+  });
 }

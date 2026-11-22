@@ -23,6 +23,26 @@ enum InitiativeTrigger {
   longSilence,
 }
 
+/// What the veto gate decided an opportunity should become.
+enum InitiativeMode { silent, chat, share }
+
+/// Maps a raw veto reply to exactly one [InitiativeMode].
+///
+/// Anything that is not a recognised SPEAK variant is [InitiativeMode.silent];
+/// a bare `SPEAK` means a plain chat message. Both ASCII and full-width colons
+/// are accepted, plus stray backticks or quotes around the marker.
+InitiativeMode parseVetoReply(String raw) {
+  final t = raw.trim().toUpperCase().replaceAll('`', '').replaceAll('"', '');
+  if (t.contains('SPEAK:SHARE') || t.contains('SPEAK：SHARE')) {
+    return InitiativeMode.share;
+  }
+  if (t.contains('SPEAK:CHAT') || t.contains('SPEAK：CHAT')) {
+    return InitiativeMode.chat;
+  }
+  if (t.contains('SPEAK')) return InitiativeMode.chat;
+  return InitiativeMode.silent;
+}
+
 /// A concrete chance to speak, produced by [pickOpportunity].
 class InitiativeOpportunity {
   const InitiativeOpportunity(this.trigger, this.reason);

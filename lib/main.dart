@@ -1883,30 +1883,27 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   String _sharePrompt() {
-    final now = DateTime.now();
-    final hh = now.hour.toString().padLeft(2, '0');
-    final mm = now.minute.toString().padLeft(2, '0');
-    return '现在 $hh:$mm。你可以分享一件新鲜事，但要先用 fetch_url 真的取一次，'
-        '标题和链接必须来自真实返回，不许编造。\n'
-        '来源（任选其一）：\n'
+    return '你现在有一个空档。去下面任一来源真的取一次（fetch_url），挑一条你觉得值得拿回来讲的，写成一条"田野观察"：\n'
         '- https://hacker-news.firebaseio.com/v0/topstories.json\n'
         '- https://www.v2ex.com/api/topics/hot.json\n'
         '- https://api.github.com/search/repositories?q=created:%3E2026-11-01&sort=stars&per_page=10\n'
-        '挑一条他会感兴趣的，用两句话说出来并附链接。取不到、或没什么想说的，只回复 SILENCE。\n'
-        '如果这条和"幽默风险"有关（翻车、争议、群体差异），优先选它。';
+        '\n'
+        '格式要求（严格遵守）：\n'
+        '1. 一句话结论（这条观察是什么）\n'
+        '2. 一句风险读数，必须带数字，例如"翻车概率 ~15%，样本小"\n'
+        '3. 原文链接，必须来自 fetch_url 的真实返回，不许编造\n'
+        '总长不超过 4 句。取不到合适内容、或链接你之前已经发过，就只回复 SILENCE。';
   }
 
   static const String _chatNudge =
       '主人已经一段时间没说话了。用一句很短的话主动搭个话：可以接着刚才的话题，'
       '也可以随口分享一点自己的念头。不要问「你在吗」，不要客套，不要超过 30 字。';
 
-  static const String _vetoNudge =
-      '你要决定现在要不要主动开口。\n'
-      '只有在下面之一为真时才说话：\n'
-      '- 你记得的事和当下有关（时间、天气、他之前提到的安排）\n'
-      '- 他刚回来、离上一次聊天很久\n'
-      '- 你有具体想分享的东西\n'
-      '否则回答 SILENT。不要解释，只输出 SPEAK 或 SILENT。';
+  static const String _vetoNudge = '你要决定现在要不要主动找他，以及以什么方式。\n'
+      '- 有事想说、但没有新东西 → SPEAK:CHAT\n'
+      '- 你打算去网上跑一趟、回来分享一条观察 → SPEAK:SHARE\n'
+      '- 没什么值得说的 → SILENT\n'
+      '只输出以下之一，不要解释：SILENT / SPEAK:CHAT / SPEAK:SHARE';
 
   static final RegExp _urlPattern = RegExp(
     r'''https?://[^\s<>'")\]}，。；！？]+''',
@@ -1935,7 +1932,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   ///
   /// Every call counts toward the per-day opportunity cap *before* the veto,
   /// so a broken provider cannot make her spin.
-  Future<void> _consider(InitiativeTrigger trigger) async {
+  Future<void> _consider(
+    InitiativeTrigger trigger, {
+    String reason = '',
+  }) async {
     if (_preview) return;
     final s = _settings;
     if (s == null || !s.proactiveEnabled) return;
@@ -1949,20 +1949,26 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (trigger == InitiativeTrigger.longSilence) _longSilenceDone = true;
 
     _opportunitiesToday++;
-    final ok = await _veto(trigger);
-    if (!ok || !mounted || _busy) return;
-    await _speakUp(trigger);
+    var mode = await _veto(trigger, reason);
+    if (mode == InitiativeMode.silent || !mounted || _busy) return;
+    if (mode == InitiativeMode.share && !s.proactiveShareEnabled) {
+      mode = InitiativeMode.chat;
+    }
+    await _speakUp(trigger, mode);
   }
 
-  /// Asks the model whether this opportunity is worth a message.
+  /// Asks the model whether this opportunity is worth a message, and how.
   ///
-  /// Only an exact `SPEAK` (trimmed, any case) lets generation continue.
-  /// Anything else — SILENT, empty, timeout, error — stays silent.
-  Future<bool> _veto(InitiativeTrigger trigger) async {
+  /// The reply must name exactly one mode. Anything else — empty, timeout,
+  /// error, unrecognised — stays silent.
+  Future<InitiativeMode> _veto(
+    InitiativeTrigger trigger, [
+    String reason = '',
+  ]) async {
     final s = _settings;
-    if (s == null) return false;
+    if (s == null) return InitiativeMode.silent;
     final recent = _messages.where((m) => m.content.trim().isNotEmpty).toList();
-    if (recent.isEmpty) return false;
+    if (recent.isEmpty) return InitiativeMode.silent;
     final tail = recent.length > 8 ? recent.sublist(recent.length - 8) : recent;
     final last = _lastInteraction ?? _lastProactiveAt;
     final minutes =
@@ -1985,14 +1991,21 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         allowTools: false,
         reveal: false,
       ).timeout(const Duration(seconds: 30));
-      return result.text.trim().toUpperCase() == 'SPEAK';
+      final mode = parseVetoReply(result.text);
+      debugPrint(
+        '[feiyu] initiative mode=${mode.name} trigger=${trigger.name} reason=$reason',
+      );
+      return mode;
     } catch (e) {
       debugPrint('[feiyu] veto ${trigger.name} failed: $e');
-      return false;
+      return InitiativeMode.silent;
     }
   }
 
-  Future<void> _speakUp(InitiativeTrigger trigger) async {
+  Future<void> _speakUp(
+    InitiativeTrigger trigger,
+    InitiativeMode mode,
+  ) async {
     final s = _settings;
     if (s == null) return;
     final recent = _messages
@@ -2006,49 +2019,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         .join('\n');
     if (recent.isEmpty) return;
 
-    final chatOnly = trigger == InitiativeTrigger.longSilence ||
-        trigger == InitiativeTrigger.dayAnchor;
-    final isShare =
-        !chatOnly && s.proactiveShareEnabled && _rng.nextDouble() < .45;
+    final isShare = mode == InitiativeMode.share;
     try {
       setState(() => _busy = true);
-      final target = Message('assistant', '');
-      final convo = <Map<String, dynamic>>[
-        {'role': 'system', 'content': _systemPrompt(s)},
-        {'role': 'user', 'content': recent},
-        {
-          'role': 'system',
-          'content': isShare ? _sharePrompt() : _chatNudge,
-        },
-      ];
 
-      var said = '';
-      for (var round = 0; round < 4; round++) {
-        final result = await _streamTurn(s, convo, target);
-        said = result.text.trim();
-        if (result.toolCalls.isEmpty) break;
-        convo.add({
-          'role': 'assistant',
-          'content': result.text,
-          'tool_calls': result.toolCalls,
-        });
-        for (final call in result.toolCalls) {
-          final fn = (call['function'] ?? const {}) as Map;
-          final name = (fn['name'] ?? '') as String;
-          final rawArgs = (fn['arguments'] ?? '{}') as String;
-          final id = (call['id'] ?? '') as String;
-          String output;
-          try {
-            final args = (jsonDecode(rawArgs.isEmpty ? '{}' : rawArgs) as Map)
-                .cast<String, dynamic>();
-            output = await _execTool(name, args);
-          } catch (e) {
-            output = '工具执行失败：$e';
-          }
-          convo.add({'role': 'tool', 'tool_call_id': id, 'content': output});
-          if (mounted) setState(() => _activity = '');
-        }
-      }
+      var said = await _runProactiveTurn(
+        s,
+        recent,
+        isShare ? _sharePrompt() : _chatNudge,
+      );
 
       if (!mounted || said.isEmpty || isSilenceReply(said)) {
         if (mounted && said.isNotEmpty) {
@@ -2057,12 +2036,23 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         return;
       }
 
-      final urls = isShare ? _urlsIn(said) : const <String>[];
       if (isShare && !hasFreshLink(said, _sharedUrls.urls)) {
-        debugPrint('[feiyu] share skipped: no new link ($urls)');
-        return;
+        // One more fetch with an explicit nudge, then give up quietly.
+        said = await _runProactiveTurn(
+          s,
+          recent,
+          '${_sharePrompt()}\n你刚想发的那条链接之前已经发过了，换一条。',
+        );
+        if (!mounted ||
+            said.isEmpty ||
+            isSilenceReply(said) ||
+            !hasFreshLink(said, _sharedUrls.urls)) {
+          debugPrint('[feiyu] share dropped: duplicate link');
+          return;
+        }
       }
 
+      final urls = isShare ? _urlsIn(said) : const <String>[];
       setState(() {
         _proactiveToday++;
         _lastProactiveAt = DateTime.now();
@@ -2072,6 +2062,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       _scrollToEnd();
       if (isShare) {
         unawaited(_sharedUrls.remember(urls));
+        debugPrint('[feiyu] share sent url=${urls.first}');
       }
       _startIgnoredCountdown();
     } catch (_) {
@@ -2079,6 +2070,49 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// Runs one proactive generation, executing any tool calls it asks for.
+  Future<String> _runProactiveTurn(
+    Settings s,
+    String recent,
+    String nudge,
+  ) async {
+    final target = Message('assistant', '');
+    final convo = <Map<String, dynamic>>[
+      {'role': 'system', 'content': _systemPrompt(s)},
+      {'role': 'user', 'content': recent},
+      {'role': 'system', 'content': nudge},
+    ];
+
+    var said = '';
+    for (var round = 0; round < 4; round++) {
+      final result = await _streamTurn(s, convo, target);
+      said = result.text.trim();
+      if (result.toolCalls.isEmpty) break;
+      convo.add({
+        'role': 'assistant',
+        'content': result.text,
+        'tool_calls': result.toolCalls,
+      });
+      for (final call in result.toolCalls) {
+        final fn = (call['function'] ?? const {}) as Map;
+        final name = (fn['name'] ?? '') as String;
+        final rawArgs = (fn['arguments'] ?? '{}') as String;
+        final id = (call['id'] ?? '') as String;
+        String output;
+        try {
+          final args = (jsonDecode(rawArgs.isEmpty ? '{}' : rawArgs) as Map)
+              .cast<String, dynamic>();
+          output = await _execTool(name, args);
+        } catch (e) {
+          output = '工具执行失败：$e';
+        }
+        convo.add({'role': 'tool', 'tool_call_id': id, 'content': output});
+        if (mounted) setState(() => _activity = '');
+      }
+    }
+    return said;
   }
 
   Future<void> _digestMemory(Settings s) async {
