@@ -581,6 +581,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Timer? _longSilenceTimer;
   DateTime? _lastInteraction;
   DateTime? _lastProactiveAt;
+  String? _lastInitiativeStatus;
   DateTime? _pausedAt;
   DateTime? _day;
   DateTime? _pendingThreadDay;
@@ -726,6 +727,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           initial: _settings ??
               Settings(baseUrl: defaultBaseUrl(), apiKey: '', model: kDefaultModel, persona: kPresetPersona),
           memory: _memory,
+          onTryInitiative: _tryInitiativeNow,
+          initialInitiativeStatus: _lastInitiativeStatus,
         ),
       ),
     );
@@ -1949,12 +1952,74 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (trigger == InitiativeTrigger.longSilence) _longSilenceDone = true;
 
     _opportunitiesToday++;
+    final status = await _runInitiative(trigger, reason: reason);
+    if (mounted) setState(() => _lastInitiativeStatus = status);
+  }
+
+  /// Shared veto → speak path. Returns a short human status string (without
+  /// the leading clock for callers that add their own timestamp).
+  Future<String> _runInitiative(
+    InitiativeTrigger trigger, {
+    String reason = '',
+  }) async {
+    final stamp = _stamp();
     var mode = await _veto(trigger, reason);
-    if (mode == InitiativeMode.silent || !mounted || _busy) return;
-    if (mode == InitiativeMode.share && !s.proactiveShareEnabled) {
+    if (mode == InitiativeMode.silent) {
+      return '$stamp · 她决定先不说话（SILENT）';
+    }
+    if (!mounted || _busy) {
+      return '$stamp · 她决定先不说话（SILENT）';
+    }
+    final s = _settings;
+    if (mode == InitiativeMode.share && (s == null || !s.proactiveShareEnabled)) {
       mode = InitiativeMode.chat;
     }
-    await _speakUp(trigger, mode);
+    final outcome = await _speakUp(trigger, mode);
+    return _initiativeStatusFrom(stamp, outcome);
+  }
+
+  String _initiativeStatusFrom(String stamp, String outcome) {
+    if (outcome == 'sent-share') return '$stamp · 分享已发出';
+    if (outcome == 'sent-chat') return '$stamp · 她主动说了一句';
+    if (outcome == 'blocked') return '$stamp · 被否决：没有新链接';
+    if (outcome.startsWith('failed:')) {
+      var detail = outcome.substring(7).trim();
+      if (detail.length > 60) detail = detail.substring(0, 60);
+      return '$stamp · 失败：$detail';
+    }
+    return '$stamp · 她决定先不说话（SILENT）';
+  }
+
+  /// Runs one opportunity right now, on explicit user request from Settings.
+  ///
+  /// Bypasses quiet hours, daily caps and the ignored streak, but never the
+  /// veto gate or the fresh-link rule.
+  Future<String> _tryInitiativeNow() async {
+    if (_busy) {
+      const msg = '她正在回复，稍后再试';
+      _lastInitiativeStatus = msg;
+      return msg;
+    }
+    final s = _settings;
+    if (s == null || s.model.trim().isEmpty || s.apiKey.trim().isEmpty) {
+      const msg = '还没配好模型或 Key';
+      _lastInitiativeStatus = msg;
+      return msg;
+    }
+    if (!mounted || _messages.isEmpty) {
+      final msg = '${_stamp()} · 还没有聊过，没法主动开口';
+      _lastInitiativeStatus = msg;
+      return msg;
+    }
+    _rollDay(DateTime.now());
+    final status = await _runInitiative(InitiativeTrigger.manual, reason: 'manual');
+    if (mounted) setState(() => _lastInitiativeStatus = status);
+    return status;
+  }
+
+  String _stamp() {
+    final now = DateTime.now();
+    return '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
   }
 
   /// Asks the model whether this opportunity is worth a message, and how.
@@ -2002,12 +2067,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _speakUp(
+  Future<String> _speakUp(
     InitiativeTrigger trigger,
     InitiativeMode mode,
   ) async {
     final s = _settings;
-    if (s == null) return;
+    if (s == null) return 'failed:没有设置';
     final recent = _messages
         .where((m) => m.content.trim().isNotEmpty)
         .toList()
@@ -2017,7 +2082,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         .reversed
         .map((m) => '${m.role == 'user' ? '主人' : '我'}：${m.content}')
         .join('\n');
-    if (recent.isEmpty) return;
+    if (recent.isEmpty) return 'silent';
 
     final isShare = mode == InitiativeMode.share;
     try {
@@ -2033,7 +2098,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         if (mounted && said.isNotEmpty) {
           debugPrint('[feiyu] proactive ${trigger.name} chose SILENCE');
         }
-        return;
+        return 'silent';
       }
 
       if (isShare && !hasFreshLink(said, _sharedUrls.urls)) {
@@ -2048,7 +2113,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             isSilenceReply(said) ||
             !hasFreshLink(said, _sharedUrls.urls)) {
           debugPrint('[feiyu] share dropped: duplicate link');
-          return;
+          return 'blocked';
         }
       }
 
@@ -2065,8 +2130,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         debugPrint('[feiyu] share sent url=${urls.first}');
       }
       _startIgnoredCountdown();
-    } catch (_) {
+      return isShare ? 'sent-share' : 'sent-chat';
+    } catch (e) {
       // Proactive turns are best-effort.
+      return 'failed:$e';
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -2611,7 +2678,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 class SettingsPage extends StatefulWidget {
   final Settings initial;
   final Memory memory;
-  const SettingsPage({super.key, required this.initial, required this.memory});
+  final Future<String> Function()? onTryInitiative;
+  final String? initialInitiativeStatus;
+  const SettingsPage({
+    super.key,
+    required this.initial,
+    required this.memory,
+    this.onTryInitiative,
+    this.initialInitiativeStatus,
+  });
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
@@ -2654,6 +2729,8 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _visionKey;
   late final TextEditingController _visionModel;
   late int _proactiveIdleMinutes;
+  String? _initiativeStatus;
+  bool _tryingInitiative = false;
   String? _avatar;
   String? _avatarError;
   String? _userAvatar;
@@ -2700,6 +2777,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _visionKey = TextEditingController(text: widget.initial.visionApiKey);
     _visionModel = TextEditingController(text: widget.initial.visionModel);
     _proactiveIdleMinutes = widget.initial.proactiveIdleMinutes;
+    _initiativeStatus = widget.initialInitiativeStatus;
     _avatar = widget.initial.avatar;
     _userAvatar = widget.initial.userAvatar;
     if (widget.initial.apiKey.trim().isNotEmpty) _loadModels();
@@ -2859,6 +2937,19 @@ class _SettingsPageState extends State<SettingsPage> {
 
   void _save() {
     Navigator.of(context).pop(_collect());
+  }
+
+  Future<void> _tryInitiative() async {
+    final cb = widget.onTryInitiative;
+    if (cb == null || _tryingInitiative) return;
+    setState(() => _tryingInitiative = true);
+    try {
+      final result = await cb();
+      if (!mounted) return;
+      setState(() => _initiativeStatus = result);
+    } finally {
+      if (mounted) setState(() => _tryingInitiative = false);
+    }
   }
 
   /// Persists the current form without leaving the page — used by controls
@@ -3189,7 +3280,26 @@ class _SettingsPageState extends State<SettingsPage> {
               SettingsRow(
                 label: '人设（system prompt）',
                 description: '她说话的方式，可随时改写',
-                child: TextField(controller: _persona, minLines: 5, maxLines: 12),
+                child: TextField(
+                  key: const ValueKey('settings-persona-field'),
+                  controller: _persona,
+                  minLines: 5,
+                  maxLines: 12,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: <Widget>[
+                  TextButton(
+                    onPressed: () => setState(() => _persona.text = kPresetPersona),
+                    child: const Text('恢复默认人设'),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '保存后生效',
+                    style: AppType.caption.copyWith(color: AppPalette.text3),
+                  ),
+                ],
               ),
             ],
           ),
@@ -3483,6 +3593,28 @@ class _SettingsPageState extends State<SettingsPage> {
                   onChanged: (v) => setState(() => _proactiveShareEnabled = v),
                 ),
               ],
+              const SizedBox(height: 10),
+              Text(
+                _initiativeStatus ?? '还没有试过',
+                style: AppType.caption.copyWith(color: AppPalette.text3),
+              ),
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  key: const ValueKey('settings-try-initiative'),
+                  onPressed: (_tryingInitiative || widget.onTryInitiative == null)
+                      ? null
+                      : _tryInitiative,
+                  child: _tryingInitiative
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('现在试一次'),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 16),

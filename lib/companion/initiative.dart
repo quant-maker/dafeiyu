@@ -21,6 +21,9 @@ enum InitiativeTrigger {
 
   /// Nobody has said anything (and she has not reached out) for hours.
   longSilence,
+
+  /// The user explicitly asked her to try right now in Settings.
+  manual,
 }
 
 /// What the veto gate decided an opportunity should become.
