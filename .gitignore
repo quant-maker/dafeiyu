@@ -38,3 +38,10 @@ git-push
 *.token
 # 固定签名：允许提交（个人项目，保证每次更新能覆盖安装）
 !android/keystore/*.jks
+
+# agent scratch + generated plugin metadata
+.omo/
+.playwright-mcp/
+.tools-tmp/
+error.txt
+.flutter-plugins-dependencies
