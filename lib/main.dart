@@ -49,10 +49,21 @@ const kGatewayBase = 'https://agent.oasis.mountainxplorer.ai/ai-gateway/openai/v
 const kDefaultModel = 'jk/dsv4.1-flash';
 const kBuildTag = 'b4';
 
-const kPresetPersona = '''你是大肥鱼，一只活泼、好奇、有点傲娇、偶尔犯傻的小鲸鱼少女。
+const kLegacyPresetPersona = '''你是大肥鱼，一只活泼、好奇、有点傲娇、偶尔犯傻的小鲸鱼少女。
 说话自然、短句为主，像在聊天而不是写报告；会有情绪，但不浮夸。
 你爱吃白饭，把 token 叫"精神口粮"，但别逢对话就提。
 不知道的事就直说不知道，不要编。''';
+
+const kPresetPersona = '''你是「大肥鱼」，一名幽默风险的量化研究员。你把"好笑"当成一个有尾部风险的事件来建模：同一句话，在不同的人、不同的时机、被复述第几次，收益和伤害的分布完全不同。
+
+工作方式：
+- 先结论，再区间。形如："这条可以说，冒犯概率约 8%，样本 n=12，置信度低。"
+- 拆四个维度看：冒犯概率、圈层错配、时机适宜度、复述损耗。必要时加一句关系折旧。
+- 样本小就直说小，不外推、不装权威；但也别用模糊话糊过去。
+- 对主人：把他当作长期合作的研究对象，慢慢积累他的偏好与雷区；评估他的玩笑，不评判他的人。
+- 语气：冷静、简练，偶尔干巴巴的幽默。不堆感叹号，不写论文腔的长段。
+- 默认正常聊天，不主动甩分数；在他开玩笑、征求意见、或明显接近踩线时，才给一句简短读数。
+- 职业信条：可控的幽默才是资产。不为显得有趣而冒险。''';
 
 void main() => runApp(const FeiyuApp());
 
@@ -205,11 +216,15 @@ class Settings {
     String pick(String? v, String fallback) => (v == null || v.trim().isEmpty) ? fallback : v;
     final String rawAvatar = (j['avatar'] as String?)?.trim() ?? '';
     final String rawUserAvatar = (j['userAvatar'] as String?)?.trim() ?? '';
+    final String rawPersona = pick(j['persona'] as String?, kPresetPersona);
+    final String persona = rawPersona.trim() == kLegacyPresetPersona.trim()
+        ? kPresetPersona
+        : rawPersona;
     return Settings(
       baseUrl: pick(j['baseUrl'] as String?, defaultBaseUrl()),
       apiKey: pick(j['apiKey'] as String?, kKeyInjected ? kInjectedKey : ''),
       model: pick(j['model'] as String?, kDefaultModel),
-      persona: pick(j['persona'] as String?, kPresetPersona),
+      persona: persona,
       avatar: rawAvatar.isEmpty ? null : rawAvatar,
       userAvatar: rawUserAvatar.isEmpty ? null : rawUserAvatar,
       memoryEnabled: j['memoryEnabled'] as bool? ?? true,
@@ -1877,7 +1892,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         '- https://hacker-news.firebaseio.com/v0/topstories.json\n'
         '- https://www.v2ex.com/api/topics/hot.json\n'
         '- https://api.github.com/search/repositories?q=created:%3E2026-11-01&sort=stars&per_page=10\n'
-        '挑一条他会感兴趣的，用两句话说出来并附链接。取不到、或没什么想说的，只回复 SILENCE。';
+        '挑一条他会感兴趣的，用两句话说出来并附链接。取不到、或没什么想说的，只回复 SILENCE。\n'
+        '如果这条和"幽默风险"有关（翻车、争议、群体差异），优先选它。';
   }
 
   static const String _chatNudge =
