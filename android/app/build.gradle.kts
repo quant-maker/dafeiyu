@@ -19,6 +19,21 @@ android {
         jvmTarget = JavaVersion.VERSION_11.toString()
     }
 
+    androidResources {
+        // sherpa_onnx ships a 14.5 MB web wasm; Android never loads it.
+        ignoreAssetsPatterns += "*.wasm"
+    }
+
+    packaging {
+        jniLibs {
+            // ndk.abiFilters alone did not prune the AAR-provided .so files.
+            excludes += setOf("lib/armeabi-v7a/**", "lib/x86_64/**")
+        }
+        resources {
+            excludes += setOf("**/*.wasm")
+        }
+    }
+
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "app.feiyu.feiyu"
@@ -28,6 +43,8 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = (project.findProperty("versionCode") as String?)?.toInt() ?: flutter.versionCode
         versionName = (project.findProperty("versionName") as String?) ?: flutter.versionName
+        // Ship only the ABI real phones use; armeabi-v7a + x86_64 add ~48 MB.
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
 
     // One fixed key for every build (local + CI). Otherwise each machine signs
@@ -58,3 +75,12 @@ android {
 flutter {
     source = "../.."
 }
+
+// ignoreAssetsPatterns does not reach the flutter_assets tree, so drop the web
+// wasm (14.5 MB raw) right before assets are merged. Android never loads it.
+tasks.matching { it.name == "mergeReleaseAssets" }.configureEach {
+    doFirst {
+        delete(file("$buildDir/intermediates/flutter/release/flutter_assets/packages/sherpa_onnx_web"))
+    }
+}
+
