@@ -171,9 +171,49 @@ function proxyComfy(req, res) {
   req.pipe(upstream)
 }
 
+// dsh mobile plugin listens on its own local port (default 3080). Forward
+// /dsh/* so the Flutter web build can reach it same-origin (no CORS). SSE
+// responses (/session/stream) are piped straight through, never buffered.
+const DSH = process.env.FEIYU_DSH || 'http://127.0.0.1:3080'
+
+function proxyDsh(req, res) {
+  const suffix = (req.url || '').replace(/^\/dsh/, '') || '/'
+  let target
+  try {
+    target = new URL(suffix, DSH)
+  } catch (e) {
+    res.writeHead(400).end('bad dsh url')
+    return
+  }
+  const lib = target.protocol === 'https:' ? https : http
+  const headers = { ...req.headers, host: target.host }
+  delete headers['accept-encoding'] // keep SSE uncompressed for live streaming
+  // Look like a plain local client so the plugin does not treat it as cross-origin.
+  delete headers['origin']
+  delete headers['referer']
+  delete headers['sec-fetch-site']
+  delete headers['sec-fetch-mode']
+  delete headers['sec-fetch-dest']
+
+  const upstream = lib.request(
+    { hostname: target.hostname, port: target.port || 80, path: target.pathname + target.search, method: req.method, headers },
+    (up) => {
+      // content-type / authorization / x-dsh-* are forwarded untouched.
+      res.writeHead(up.statusCode || 502, up.headers)
+      up.pipe(res)
+    },
+  )
+  upstream.on('error', (e) => {
+    if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
+    res.end('dsh proxy error: ' + e.message)
+  })
+  req.pipe(upstream)
+}
+
 const server = http.createServer((req, res) => {
   if ((req.url || '').startsWith('/v1/') || req.url === '/v1') return proxyApi(req, res)
 if ((req.url || '').startsWith('/comfy')) return proxyComfy(req, res)
+  if ((req.url || '').startsWith('/dsh')) return proxyDsh(req, res)
   if ((req.url || '').startsWith('/fetch')) return fetchPage(req, res)
   if (req.url === '/healthz') return res.writeHead(200).end('ok')
   return serveStatic(req, res)
@@ -182,4 +222,5 @@ if ((req.url || '').startsWith('/comfy')) return proxyComfy(req, res)
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`feiyu web on http://127.0.0.1:${PORT}  (static: ${WEB_ROOT})`)
   console.log(`/v1/* -> ${UPSTREAM}`)
+  console.log(`/dsh/* -> ${DSH}`)
 })
