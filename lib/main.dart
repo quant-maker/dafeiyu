@@ -1972,10 +1972,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       '主人已经一段时间没说话了。用一句很短的话主动搭个话：可以接着刚才的话题，'
       '也可以随口分享一点自己的念头。不要问「你在吗」，不要客套，不要超过 30 字。';
 
-  static const String _vetoNudge = '你要决定现在要不要主动找他，以及以什么方式。\n'
-      '- 有事想说、但没有新东西 → SPEAK:CHAT\n'
-      '- 你打算去网上跑一趟、回来分享一条观察 → SPEAK:SHARE\n'
-      '- 没什么值得说的 → SILENT\n'
+  static const String _vetoNudge = '你要决定现在要不要主动找他。\n'
+      '大多数时候可以说：你记得他的事、你们刚聊过、时间合适、或者你有具体想说的，都属于可以。\n'
+      '只有下面情况才沉默：深夜他真的该睡了、他刚被拒绝/明显情绪不好、你确实没有任何新东西。\n'
+      '能说话就说。宁可短，也别不说。\n'
       '只输出以下之一，不要解释：SILENT / SPEAK:CHAT / SPEAK:SHARE';
 
   static final RegExp _urlPattern = RegExp(
@@ -2033,7 +2033,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     String reason = '',
   }) async {
     final stamp = _stamp();
-    var mode = await _veto(trigger, reason);
+    // A manual run is an explicit "show me something now", so it skips the
+    // veto entirely and goes straight to generation. Automatic opportunities
+    // still pass through the (speak-biased) veto gate.
+    var mode = trigger == InitiativeTrigger.manual
+        ? InitiativeMode.chat
+        : await _veto(trigger, reason);
     if (mode == InitiativeMode.silent) {
       return '$stamp · 她决定先不说话（SILENT）';
     }
@@ -2045,12 +2050,24 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       mode = InitiativeMode.chat;
     }
     final outcome = await _speakUp(trigger, mode);
-    return _initiativeStatusFrom(stamp, outcome);
+    return _initiativeStatusFrom(stamp, outcome, trigger);
   }
 
-  String _initiativeStatusFrom(String stamp, String outcome) {
-    if (outcome == 'sent-share') return '$stamp · 分享已发出';
-    if (outcome == 'sent-chat') return '$stamp · 她主动说了一句';
+  String _initiativeStatusFrom(
+    String stamp,
+    String outcome, [
+    InitiativeTrigger trigger = InitiativeTrigger.afterthought,
+  ]) {
+    if (outcome == 'sent-share') {
+      return trigger == InitiativeTrigger.manual
+          ? '$stamp · 手动测试已发出'
+          : '$stamp · 分享已发出';
+    }
+    if (outcome == 'sent-chat') {
+      return trigger == InitiativeTrigger.manual
+          ? '$stamp · 手动测试已发出'
+          : '$stamp · 她主动说了一句';
+    }
     if (outcome == 'blocked') return '$stamp · 被否决：没有新链接';
     if (outcome.startsWith('failed:')) {
       var detail = outcome.substring(7).trim();
