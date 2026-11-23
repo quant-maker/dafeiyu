@@ -9,6 +9,7 @@ import '../ui/layout.dart';
 import '../ui/overlays.dart';
 import '../ui/surfaces.dart';
 import '../ui/tokens.dart';
+import 'art_store.dart';
 import 'comfy.dart';
 
 /// A phone-sized console for the ComfyUI running on the desk computer.
@@ -42,13 +43,32 @@ class _ComfyPageState extends State<ComfyPage> {
   int _queue = 0;
   String _stage = '';
   List<Uint8List> _results = const [];
+  ArtStore? _art;
+
+  static const List<String> _examples = <String>[
+    '一只胖胖的小鲸鱼，坐在深夜窗边，暖色台灯',
+    '雨夜的便利店门口，霓虹倒影',
+    '毛绒质感的鲸鱼玩偶，柔光棚拍',
+  ];
 
   ComfyClient get _client => ComfyClient.resolved(widget.baseUrl, web: kIsWeb);
 
   @override
   void initState() {
     super.initState();
+    _loadArt();
     _refresh();
+  }
+
+  Future<void> _loadArt() async {
+    try {
+      final ArtStore store = await ArtStore.load();
+      if (!mounted) return;
+      setState(() => _art = store);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _art = ArtStore());
+    }
   }
 
   @override
@@ -121,12 +141,51 @@ class _ComfyPageState extends State<ComfyPage> {
         _results = images;
         _stage = '';
       });
+      await _persistArt(images, text);
       await _refresh();
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _persistArt(List<Uint8List> images, String prompt) async {
+    if (images.isEmpty) return;
+    final ArtStore store = _art ?? await ArtStore.load();
+    if (!mounted) return;
+    _art ??= store;
+    final DateTime now = DateTime.now();
+    final List<ArtItem> fresh = <ArtItem>[
+      for (final Uint8List bytes in images)
+        ArtItem(id: '', at: now, prompt: prompt, b64: base64Encode(bytes)),
+    ];
+    // addAll mutates the list synchronously, so the wall updates before the
+    // save round-trip completes.
+    final Future<void> pending = store.addAll(fresh);
+    setState(() {});
+    try {
+      await pending;
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {});
+      _showStorageNotice();
+    }
+  }
+
+  void _showStorageNotice() {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(content: Text('存储空间不足，已清理最早的几张')),
+      );
+  }
+
+  void _fillPrompt(String text) {
+    setState(() {
+      _prompt.text = text;
+      _prompt.selection = TextSelection.collapsed(offset: text.length);
+    });
   }
 
   @override
@@ -241,10 +300,206 @@ class _ComfyPageState extends State<ComfyPage> {
                 },
               ),
             ],
+            const SizedBox(height: AppSpacing.xxl),
+            _artSection(context),
           ],
         ),
       ),
     );
+  }
+
+  Widget _artSection(BuildContext context) {
+    final List<ArtItem> items = _art?.items ?? const <ArtItem>[];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        const SectionHeader(label: '作品'),
+        const SizedBox(height: AppSpacing.m),
+        if (items.isEmpty) _artEmpty(context) else _artGrid(context, items),
+      ],
+    );
+  }
+
+  Widget _artEmpty(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.l),
+      decoration: BoxDecoration(
+        color: AppPalette.surfaceAlt,
+        borderRadius: BorderRadius.circular(AppRadii.xl),
+        border: Border.all(color: AppPalette.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            '还没有作品',
+            style: AppType.subtitle.copyWith(color: AppPalette.text1),
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            '点一句灵感，先生成第一张',
+            style: AppType.caption.copyWith(color: AppPalette.text3),
+          ),
+          const SizedBox(height: AppSpacing.m),
+          Wrap(
+            spacing: AppSpacing.s,
+            runSpacing: AppSpacing.s,
+            children: <Widget>[
+              for (final String sample in _examples) _exampleChip(sample),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _exampleChip(String text) {
+    return Semantics(
+      button: true,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: () => _fillPrompt(text),
+          child: Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.m,
+              vertical: AppSpacing.s,
+            ),
+            decoration: BoxDecoration(
+              color: AppPalette.primary.withValues(alpha: .10),
+              borderRadius: BorderRadius.circular(AppRadii.full),
+              border: Border.all(
+                color: AppPalette.primary.withValues(alpha: .30),
+              ),
+            ),
+            child: Text(
+              text,
+              style: AppType.caption.copyWith(color: AppPalette.primary),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _artGrid(BuildContext context, List<ArtItem> items) {
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        final double gap = AppSpacing.m;
+        final int columns = constraints.maxWidth >= 520 ? 2 : 1;
+        final double tileWidth =
+            (constraints.maxWidth - gap * (columns - 1)) / columns;
+        return GridView.builder(
+          shrinkWrap: true,
+          padding: EdgeInsets.zero,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            mainAxisSpacing: gap,
+            crossAxisSpacing: gap,
+            mainAxisExtent: tileWidth + 38,
+          ),
+          itemCount: items.length,
+          itemBuilder: (BuildContext context, int index) =>
+              _artTile(context, items[index]),
+        );
+      },
+    );
+  }
+
+  Widget _artTile(BuildContext context, ArtItem item) {
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: AppPalette.surfaceAlt,
+        borderRadius: BorderRadius.circular(AppRadii.m),
+        border: Border.all(color: AppPalette.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Expanded(
+            child: GestureDetector(
+              onTap: () => _openArt(context, item),
+              child: Image.memory(
+                item.bytes,
+                fit: BoxFit.cover,
+                semanticLabel: '作品',
+              ),
+            ),
+          ),
+          SizedBox(
+            height: 38,
+            child: Padding(
+              padding: const EdgeInsets.only(left: AppSpacing.s, right: 2),
+              child: Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Text(
+                      item.caption,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppType.caption.copyWith(color: AppPalette.text3),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '删除作品',
+                    onPressed: () => _confirmRemove(item),
+                    iconSize: 16,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 32,
+                      height: 32,
+                    ),
+                    icon: Icon(Icons.close, color: AppPalette.text3),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openArt(BuildContext context, ArtItem item) {
+    showImageViewer(
+      context,
+      item.bytes,
+      extraActions: _viewerActions(context, item.bytes),
+    );
+  }
+
+  Future<void> _confirmRemove(ArtItem item) async {
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('确认删除？'),
+        content: const Text('这张作品会从画廊里移除。'),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final ArtStore? store = _art;
+    if (store == null) return;
+    final Future<void> pending = store.remove(item.id);
+    setState(() {});
+    try {
+      await pending;
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {});
+      _showStorageNotice();
+    }
   }
 
   Widget _resultTile(
