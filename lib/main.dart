@@ -2620,7 +2620,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final s = _settings;
     if (s == null) return;
     await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => ComfyPage(baseUrl: s.comfyUrl, workflowJson: s.comfyWorkflow),
+      builder: (_) => ComfyPage(
+        baseUrl: s.comfyUrl,
+        workflowJson: s.comfyWorkflow,
+        onUseAsAvatar: (Uint8List bytes) async {
+          s.avatar = base64Encode(bytes);
+          await s.save();
+          if (!mounted) return;
+          setState(() => _settings = s);
+        },
+      ),
     ));
   }
 

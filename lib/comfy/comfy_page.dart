@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
+import '../ui/image_save.dart';
 import '../ui/layout.dart';
 import '../ui/overlays.dart';
 import '../ui/surfaces.dart';
@@ -15,7 +16,16 @@ class ComfyPage extends StatefulWidget {
   final String baseUrl;
   final String workflowJson;
 
-  const ComfyPage({super.key, required this.baseUrl, required this.workflowJson});
+  /// When provided, each result offers a "设为头像" action that hands the
+  /// generated PNG bytes back to the host screen.
+  final void Function(Uint8List bytes)? onUseAsAvatar;
+
+  const ComfyPage({
+    super.key,
+    required this.baseUrl,
+    required this.workflowJson,
+    this.onUseAsAvatar,
+  });
 
   @override
   State<ComfyPage> createState() => _ComfyPageState();
@@ -209,7 +219,7 @@ class _ComfyPageState extends State<ComfyPage> {
                       childAspectRatio: 1,
                       children: [
                         for (final bytes in _results)
-                          _thumbnail(context, bytes),
+                          _resultTile(context, bytes, grid: true),
                       ],
                     );
                   }
@@ -220,9 +230,10 @@ class _ComfyPageState extends State<ComfyPage> {
                           padding: EdgeInsets.only(
                             bottom: i == _results.length - 1 ? 0 : 12,
                           ),
-                          child: AspectRatio(
-                            aspectRatio: 1,
-                            child: _thumbnail(context, _results[i]),
+                          child: _resultTile(
+                            context,
+                            _results[i],
+                            grid: false,
                           ),
                         ),
                     ],
@@ -236,8 +247,12 @@ class _ComfyPageState extends State<ComfyPage> {
     );
   }
 
-  Widget _thumbnail(BuildContext context, Uint8List bytes) {
-    return ClipRRect(
+  Widget _resultTile(
+    BuildContext context,
+    Uint8List bytes, {
+    required bool grid,
+  }) {
+    final Widget image = ClipRRect(
       borderRadius: BorderRadius.circular(AppRadii.l),
       child: GestureDetector(
         onTap: () => _openFull(context, bytes),
@@ -248,10 +263,99 @@ class _ComfyPageState extends State<ComfyPage> {
         ),
       ),
     );
+    return Column(
+      mainAxisSize: grid ? MainAxisSize.max : MainAxisSize.min,
+      children: [
+        if (grid)
+          Expanded(child: SizedBox.expand(child: image))
+        else
+          AspectRatio(aspectRatio: 1, child: image),
+        _actionRow(context, bytes),
+      ],
+    );
+  }
+
+  Widget _actionRow(BuildContext context, Uint8List bytes) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        spacing: AppSpacing.s,
+        children: [
+          TextButton(
+            onPressed: () => _save(context, bytes),
+            style: TextButton.styleFrom(
+              minimumSize: const Size(0, 36),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              visualDensity: VisualDensity.compact,
+            ),
+            child: const Text('保存'),
+          ),
+          if (widget.onUseAsAvatar != null)
+            TextButton(
+              onPressed: () => _useAsAvatar(context, bytes),
+              style: TextButton.styleFrom(
+                minimumSize: const Size(0, 36),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                visualDensity: VisualDensity.compact,
+              ),
+              child: const Text('设为头像'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _viewerActions(BuildContext context, Uint8List bytes) {
+    return <Widget>[
+      TextButton(
+        onPressed: () => _save(context, bytes),
+        child: const Text('保存', style: TextStyle(color: Colors.white)),
+      ),
+      if (widget.onUseAsAvatar != null)
+        TextButton(
+          onPressed: () {
+            _useAsAvatar(context, bytes);
+            Navigator.of(context).pop();
+          },
+          child: const Text('设为头像', style: TextStyle(color: Colors.white)),
+        ),
+    ];
+  }
+
+  Future<void> _save(BuildContext context, Uint8List bytes) async {
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+    try {
+      final String? path = await saveImageBytes(bytes);
+      if (!mounted) return;
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(kIsWeb ? '已开始下载' : '已保存：$path'),
+          ),
+        );
+    } catch (e) {
+      if (!mounted) return;
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('保存失败：$e')));
+    }
+  }
+
+  void _useAsAvatar(BuildContext context, Uint8List bytes) {
+    widget.onUseAsAvatar!(bytes);
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(content: Text('已设为她的头像')));
   }
 
   void _openFull(BuildContext context, Uint8List bytes) {
-    showImageViewer(context, bytes);
+    showImageViewer(
+      context,
+      bytes,
+      extraActions: _viewerActions(context, bytes),
+    );
   }
 
   Widget _statusCard() {
