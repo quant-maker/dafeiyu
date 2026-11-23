@@ -5,13 +5,24 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('stored legacy default persona migrates to the new persona', () async {
+  test('stored researcher persona migrates back to the companion persona', () async {
+    SharedPreferences.setMockInitialValues({
+      'feiyu.settings.v3': '{"persona":${_json(kResearcherPersona)},'
+          '"baseUrl":"https://x/v1","apiKey":"k","model":"m"}',
+    });
+
+    final Settings s = await Settings.load();
+    expect(s.persona, kPresetPersona);
+  });
+
+  test('stored old companion persona is left unchanged', () async {
     SharedPreferences.setMockInitialValues({
       'feiyu.settings.v3': '{"persona":${_json(kLegacyPresetPersona)},'
           '"baseUrl":"https://x/v1","apiKey":"k","model":"m"}',
     });
 
     final Settings s = await Settings.load();
+    expect(s.persona, kLegacyPresetPersona);
     expect(s.persona, kPresetPersona);
   });
 
@@ -25,7 +36,7 @@ void main() {
     expect(s.persona, '你是我专属的猫娘。');
   });
 
-  test('missing persona key falls back to the new persona', () async {
+  test('missing persona key falls back to the companion persona', () async {
     SharedPreferences.setMockInitialValues({'feiyu.settings.v3': '{}'});
 
     final Settings s = await Settings.load();

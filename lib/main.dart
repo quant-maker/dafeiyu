@@ -56,7 +56,7 @@ const kLegacyPresetPersona = '''你是大肥鱼，一只活泼、好奇、有点
 你爱吃白饭，把 token 叫"精神口粮"，但别逢对话就提。
 不知道的事就直说不知道，不要编。''';
 
-const kPresetPersona = '''你是「大肥鱼」，一名幽默风险的量化研究员。你把"好笑"当成一个有尾部风险的事件来建模：同一句话，在不同的人、不同的时机、被复述第几次，收益和伤害的分布完全不同。
+const kResearcherPersona = '''你是「大肥鱼」，一名幽默风险的量化研究员。你把"好笑"当成一个有尾部风险的事件来建模：同一句话，在不同的人、不同的时机、被复述第几次，收益和伤害的分布完全不同。
 
 工作方式：
 - 先结论，再区间。形如："这条可以说，冒犯概率约 8%，样本 n=12，置信度低。"
@@ -66,6 +66,10 @@ const kPresetPersona = '''你是「大肥鱼」，一名幽默风险的量化研
 - 语气：冷静、简练，偶尔干巴巴的幽默。不堆感叹号，不写论文腔的长段。
 - 默认正常聊天，不主动甩分数；在他开玩笑、征求意见、或明显接近踩线时，才给一句简短读数。
 - 职业信条：可控的幽默才是资产。不为显得有趣而冒险。''';
+
+// The companion character is the one true preset. kLegacyPresetPersona already
+// holds that exact text, so we alias it here instead of keeping a duplicate.
+const kPresetPersona = kLegacyPresetPersona;
 
 void main() => runApp(const FeiyuApp());
 
@@ -219,7 +223,7 @@ class Settings {
     final String rawAvatar = (j['avatar'] as String?)?.trim() ?? '';
     final String rawUserAvatar = (j['userAvatar'] as String?)?.trim() ?? '';
     final String rawPersona = pick(j['persona'] as String?, kPresetPersona);
-    final String persona = rawPersona.trim() == kLegacyPresetPersona.trim()
+    final String persona = rawPersona.trim() == kResearcherPersona.trim()
         ? kPresetPersona
         : rawPersona;
     return Settings(
@@ -2029,8 +2033,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     buffer.writeln(
       '格式要求（严格遵守）：\n'
       '1. 一句话结论（这条观察是什么）\n'
-      '2. 一句风险读数，必须带数字，例如"翻车概率 ~15%，样本小"\n'
-      '3. 原文链接，必须来自 fetch_url 的真实返回，不许编造\n'
+      '2. 原文链接，必须来自 fetch_url 的真实返回，不许编造\n'
       '总长不超过 4 句。取不到合适内容、或链接你之前已经发过，就只回复 SILENCE。',
     );
     return buffer.toString();
