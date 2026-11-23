@@ -14,6 +14,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
+import 'companion/feed_fetch.dart';
+import 'companion/feed_inbox.dart';
 import 'companion/initiative.dart';
 import 'comfy/comfy.dart';
 import 'comfy/comfy_page.dart';
@@ -575,6 +577,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   static const _charsPerSecond = 46.0;
   final Random _rng = Random();
   SharedUrlStore _sharedUrls = SharedUrlStore.empty();
+  FeedInbox _inbox = FeedInbox.empty();
+  Timer? _heartbeatTimer;
+  bool _heartbeatFailed = false;
   Timer? _ignoredTimer;
   Timer? _pendingThreadTimer;
   Timer? _afterthoughtTimer;
@@ -621,6 +626,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (mounted) {
         setState(() => _settings = s);
         _armPresence();
+        unawaited(_bootHeartbeat());
       }
     }).catchError((Object e, StackTrace st) {
       debugPrint('[feiyu] settings load FAILED: $e');
@@ -686,6 +692,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _afterthoughtTimer?.cancel();
     _longSilenceTimer?.cancel();
     _presenceTimer?.cancel();
+    _heartbeatTimer?.cancel();
     _input.removeListener(_noteInteraction);
     _input.dispose();
     _scroll.removeListener(_onScroll);
@@ -753,6 +760,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           onTryInitiative: _tryInitiativeNow,
           initialInitiativeStatus: _lastInitiativeStatus,
           initialNextCheck: _nextCheckLabel,
+          inboxCount: _inbox.unsharedCount,
         ),
       ),
     );
@@ -1870,6 +1878,55 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     unawaited(_consider(InitiativeTrigger.presence));
   }
 
+  /// Quiet ambient pull of real headlines into [_inbox].
+  ///
+  /// It never calls a model, only the public JSON feeds: this is the free
+  /// material the veto gate reads later. Single-shot and chained only after
+  /// each run finishes, so runs can never pile up.
+  Future<void> _bootHeartbeat() async {
+    if (_preview) return;
+    try {
+      _inbox = await FeedInbox.load();
+      if (mounted) setState(() {});
+    } catch (e) {
+      debugPrint('[feiyu] inbox load FAILED: $e');
+    }
+    if (!mounted) return;
+    unawaited(_runHeartbeat());
+  }
+
+  Future<void> _runHeartbeat() async {
+    if (_preview) return;
+    var added = 0;
+    try {
+      final fresh = await fetchFeeds(httpGet: defaultJsonFetcher);
+      added = await _inbox.addAll(fresh);
+      await _inbox.prune();
+      _heartbeatFailed = fresh.isEmpty;
+    } catch (e) {
+      _heartbeatFailed = true;
+      debugPrint('[feiyu] heartbeat fetch failed: $e');
+    }
+    debugPrint('[feiyu] inbox +$added total=${_inbox.items.length}');
+    if (mounted) setState(() {});
+    if (!mounted || _preview) return;
+    // Success: 90..180 minutes. Failure: back off to 180 so we never hammer.
+    final delay = _heartbeatFailed
+        ? const Duration(minutes: 180)
+        : Duration(minutes: 90 + _rng.nextInt(91));
+    _scheduleHeartbeat(delay);
+  }
+
+  void _scheduleHeartbeat(Duration delay) {
+    if (_preview) return;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer(delay, () {
+      _heartbeatTimer = null;
+      unawaited(_runHeartbeat());
+    });
+    debugPrint('[feiyu] heartbeat next in ${delay.inMinutes}m');
+  }
+
   void _setNextCheckLabel(DateTime? at) {
     final label = at == null
         ? null
@@ -1956,16 +2013,27 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   String _sharePrompt() {
-    return '你现在有一个空档。去下面任一来源真的取一次（fetch_url），挑一条你觉得值得拿回来讲的，写成一条"田野观察"：\n'
-        '- https://hacker-news.firebaseio.com/v0/topstories.json\n'
-        '- https://www.v2ex.com/api/topics/hot.json\n'
-        '- https://api.github.com/search/repositories?q=created:%3E2026-11-01&sort=stars&per_page=10\n'
-        '\n'
-        '格式要求（严格遵守）：\n'
-        '1. 一句话结论（这条观察是什么）\n'
-        '2. 一句风险读数，必须带数字，例如"翻车概率 ~15%，样本小"\n'
-        '3. 原文链接，必须来自 fetch_url 的真实返回，不许编造\n'
-        '总长不超过 4 句。取不到合适内容、或链接你之前已经发过，就只回复 SILENCE。';
+    final buffer = StringBuffer(
+      '你现在有一个空档。手上有这些还没分享的发现，挑一条你觉得值得讲的，'
+      '直接用 fetch_url 打开它对应的 url 取一次原文（不要另去找）：\n',
+    );
+    final items = _inbox.items.take(5).toList();
+    if (items.isEmpty) {
+      buffer.writeln('- （手头没有现成的，可去 https://www.v2ex.com/api/topics/hot.json 取一次）');
+    } else {
+      for (final item in items) {
+        buffer.writeln('- ${item.title}（${item.source}）：${item.url}');
+      }
+    }
+    buffer.writeln();
+    buffer.writeln(
+      '格式要求（严格遵守）：\n'
+      '1. 一句话结论（这条观察是什么）\n'
+      '2. 一句风险读数，必须带数字，例如"翻车概率 ~15%，样本小"\n'
+      '3. 原文链接，必须来自 fetch_url 的真实返回，不许编造\n'
+      '总长不超过 4 句。取不到合适内容、或链接你之前已经发过，就只回复 SILENCE。',
+    );
+    return buffer.toString();
   }
 
   static const String _chatNudge =
@@ -1977,6 +2045,25 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       '只有下面情况才沉默：深夜他真的该睡了、他刚被拒绝/明显情绪不好、你确实没有任何新东西。\n'
       '能说话就说。宁可短，也别不说。\n'
       '只输出以下之一，不要解释：SILENT / SPEAK:CHAT / SPEAK:SHARE';
+
+  /// The veto prompt, with any buffered headlines folded in.
+  String _vetoPrompt() {
+    final buffer = StringBuffer(_vetoNudge)..writeln();
+    if (_inbox.unsharedCount > 0) {
+      buffer.writeln(
+        '你手上有 ${_inbox.unsharedCount} 条还没分享的发现（标题 + 来源）。'
+        '有值得讲的就挑一条，用 SPEAK:SHARE；只想闲聊用 SPEAK:CHAT；确实没有就 SILENT。',
+      );
+      for (final item in _inbox.items.take(5)) {
+        buffer.writeln('- ${item.title}（${item.source}）');
+      }
+    } else {
+      buffer.writeln(
+        '你手上现在没有新的发现，想主动找他只能闲聊，用 SPEAK:CHAT；不想说话用 SILENT。',
+      );
+    }
+    return buffer.toString();
+  }
 
   static final RegExp _urlPattern = RegExp(
     r'''https?://[^\s<>'")\]}，。；！？]+''',
@@ -2033,12 +2120,23 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     String reason = '',
   }) async {
     final stamp = _stamp();
-    // A manual run is an explicit "show me something now", so it skips the
-    // veto entirely and goes straight to generation. Automatic opportunities
-    // still pass through the (speak-biased) veto gate.
-    var mode = trigger == InitiativeTrigger.manual
-        ? InitiativeMode.chat
-        : await _veto(trigger, reason);
+    // A manual run is an explicit "show me something now", so it never ends in
+    // silence. With buffered headlines it still asks the model once (cheap) so
+    // it can prefer a share; otherwise it just chats. Automatic opportunities
+    // always pass through the (speak-biased) veto gate.
+    InitiativeMode mode;
+    if (trigger == InitiativeTrigger.manual) {
+      if (_inbox.unsharedCount > 0) {
+        final veto = await _veto(trigger, reason);
+        mode = veto == InitiativeMode.share
+            ? InitiativeMode.share
+            : InitiativeMode.chat;
+      } else {
+        mode = InitiativeMode.chat;
+      }
+    } else {
+      mode = await _veto(trigger, reason);
+    }
     if (mode == InitiativeMode.silent) {
       return '$stamp · 她决定先不说话（SILENT）';
     }
@@ -2131,7 +2229,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final convo = <Map<String, dynamic>>[
       {'role': 'system', 'content': _systemPrompt(s)},
       {'role': 'user', 'content': '$context\n距上次说话：$minutes 分钟'},
-      {'role': 'system', 'content': _vetoNudge},
+      {'role': 'system', 'content': _vetoPrompt()},
     ];
     try {
       final target = Message('assistant', '');
@@ -2214,6 +2312,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       _scrollToEnd();
       if (isShare) {
         unawaited(_sharedUrls.remember(urls));
+        unawaited(_inbox.markShared(urls));
         debugPrint('[feiyu] share sent url=${urls.first}');
       }
       _startIgnoredCountdown();
@@ -2768,6 +2867,7 @@ class SettingsPage extends StatefulWidget {
   final Future<String> Function()? onTryInitiative;
   final String? initialInitiativeStatus;
   final String? initialNextCheck;
+  final int inboxCount;
   const SettingsPage({
     super.key,
     required this.initial,
@@ -2775,6 +2875,7 @@ class SettingsPage extends StatefulWidget {
     this.onTryInitiative,
     this.initialInitiativeStatus,
     this.initialNextCheck,
+    this.inboxCount = 0,
   });
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -3682,6 +3783,12 @@ class _SettingsPageState extends State<SettingsPage> {
                   onChanged: (v) => setState(() => _proactiveShareEnabled = v),
                 ),
               ],
+              const SizedBox(height: 6),
+              Text(
+                '发现箱：${widget.inboxCount} 条',
+                key: const ValueKey('settings-inbox-count'),
+                style: AppType.caption.copyWith(color: AppPalette.text3),
+              ),
               const SizedBox(height: 10),
               Text(
                 _initiativeStatus ?? '还没有试过',
