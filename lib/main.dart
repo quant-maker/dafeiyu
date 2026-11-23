@@ -579,10 +579,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Timer? _pendingThreadTimer;
   Timer? _afterthoughtTimer;
   Timer? _longSilenceTimer;
+  Timer? _presenceTimer;
+  DateTime? _presenceArmedAt;
+  String? _nextCheckLabel;
   DateTime? _lastInteraction;
   DateTime? _lastProactiveAt;
   String? _lastInitiativeStatus;
-  DateTime? _pausedAt;
+  DateTime? _hiddenAt;
+  AppLifecycleListener? _lifecycle;
   DateTime? _day;
   DateTime? _pendingThreadDay;
   int _proactiveToday = 0;
@@ -600,6 +604,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _lifecycle = AppLifecycleListener(
+      onHide: _noteHidden,
+      onShow: _noteShown,
+    );
     _preview = kIsWeb && Uri.base.queryParameters['seed'] == '1';
     _scroll.addListener(_onScroll);
     _input.addListener(_noteInteraction);
@@ -612,6 +620,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       debugPrint('[feiyu] settings loaded base=${s.baseUrl} model=${s.model} keyLen=${s.apiKey.length}');
       if (mounted) {
         setState(() => _settings = s);
+        _armPresence();
       }
     }).catchError((Object e, StackTrace st) {
       debugPrint('[feiyu] settings load FAILED: $e');
@@ -671,10 +680,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (local != null) unawaited(local.stop());
     _client?.close();
     WidgetsBinding.instance.removeObserver(this);
+    _lifecycle?.dispose();
     _ignoredTimer?.cancel();
     _pendingThreadTimer?.cancel();
     _afterthoughtTimer?.cancel();
     _longSilenceTimer?.cancel();
+    _presenceTimer?.cancel();
     _input.removeListener(_noteInteraction);
     _input.dispose();
     _scroll.removeListener(_onScroll);
@@ -688,16 +699,28 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       case AppLifecycleState.paused:
       case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
-        _pausedAt ??= DateTime.now();
+        _noteHidden();
       case AppLifecycleState.resumed:
-        final pausedAt = _pausedAt;
-        _pausedAt = null;
-        if (pausedAt != null &&
-            DateTime.now().difference(pausedAt) >= reopenGap) {
-          unawaited(_consider(InitiativeTrigger.reopen));
-        }
+        _noteShown();
       case AppLifecycleState.detached:
         break;
+    }
+  }
+
+  /// Records when the app/tab went away. The first caller wins; both
+  /// [AppLifecycleListener] and [WidgetsBindingObserver] may report it.
+  void _noteHidden() {
+    _hiddenAt ??= DateTime.now();
+  }
+
+  /// On return, a pause of [reopenGap] or more is a reopen opportunity.
+  /// Consuming [_hiddenAt] keeps the two lifecycle APIs from double-firing.
+  void _noteShown() {
+    final hiddenAt = _hiddenAt;
+    _hiddenAt = null;
+    if (hiddenAt != null &&
+        DateTime.now().difference(hiddenAt) >= reopenGap) {
+      unawaited(_consider(InitiativeTrigger.reopen));
     }
   }
 
@@ -729,6 +752,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           memory: _memory,
           onTryInitiative: _tryInitiativeNow,
           initialInitiativeStatus: _lastInitiativeStatus,
+          initialNextCheck: _nextCheckLabel,
         ),
       ),
     );
@@ -1406,6 +1430,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (_inCall && _callPhase == CallPhase.thinking) {
       await _runCallReply(reply);
     }
+    if (mounted) _armPresence();
   }
 
   Future<String> _runAgent() async {
@@ -1809,6 +1834,51 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// reopen and long-silence checks have a reference point. It never sends.
   void _noteInteraction() {
     _lastInteraction = DateTime.now();
+  }
+
+  /// Arms exactly one presence check 25..70 minutes from now.
+  ///
+  /// Single-shot on purpose: on web nothing fires when the tab just sits there,
+  /// so this is the only path that reaches [_consider] without a lifecycle
+  /// event. It is re-armed after each interaction, never on a timer.
+  void _armPresence() {
+    if (_preview) return;
+    _presenceTimer?.cancel();
+    final now = DateTime.now();
+    final delay = presenceDelayMinutes(_rng);
+    _presenceArmedAt = now;
+    _presenceTimer = Timer(Duration(minutes: delay), _onPresenceFire);
+    debugPrint('[feiyu] presence check armed in ${delay}m');
+    _setNextCheckLabel(now.add(Duration(minutes: delay)));
+  }
+
+  void _onPresenceFire() {
+    _presenceTimer = null;
+    final armedAt = _presenceArmedAt;
+    final last = _lastInteraction;
+    debugPrint('[feiyu] presence fired');
+    // The user was active after this check was armed: the chance is stale, so
+    // replace it with a fresh single-shot check instead of speaking now.
+    if (last != null && armedAt != null && last.isAfter(armedAt)) {
+      _armPresence();
+      return;
+    }
+    // Still idle: consider once, then stay disarmed. The next real interaction
+    // re-arms a fresh check.
+    _setNextCheckLabel(null);
+    if (!mounted) return;
+    unawaited(_consider(InitiativeTrigger.presence));
+  }
+
+  void _setNextCheckLabel(DateTime? at) {
+    final label = at == null
+        ? null
+        : '下次检查：约 ${at.hour.toString().padLeft(2, '0')}:${at.minute.toString().padLeft(2, '0')}（presence）';
+    if (!mounted) {
+      _nextCheckLabel = label;
+      return;
+    }
+    setState(() => _nextCheckLabel = label);
   }
 
   /// The user actually sent something: forgive past silence, mark the day as
@@ -2680,12 +2750,14 @@ class SettingsPage extends StatefulWidget {
   final Memory memory;
   final Future<String> Function()? onTryInitiative;
   final String? initialInitiativeStatus;
+  final String? initialNextCheck;
   const SettingsPage({
     super.key,
     required this.initial,
     required this.memory,
     this.onTryInitiative,
     this.initialInitiativeStatus,
+    this.initialNextCheck,
   });
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -3596,6 +3668,12 @@ class _SettingsPageState extends State<SettingsPage> {
               const SizedBox(height: 10),
               Text(
                 _initiativeStatus ?? '还没有试过',
+                style: AppType.caption.copyWith(color: AppPalette.text3),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                widget.initialNextCheck ?? '下次检查：未安排',
+                key: const ValueKey('settings-next-check'),
                 style: AppType.caption.copyWith(color: AppPalette.text3),
               ),
               const SizedBox(height: 4),

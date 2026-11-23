@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -24,7 +25,17 @@ enum InitiativeTrigger {
 
   /// The user explicitly asked her to try right now in Settings.
   manual,
+
+  /// A single-shot check armed after a real interaction, so the web build
+  /// still reaches out when the tab stays open and no lifecycle event fires.
+  presence,
 }
+
+/// How long to wait before the next single-shot presence check, in minutes.
+///
+/// Always 25..70 inclusive; deterministic for a given seeded [Random] so the
+/// scheduling can be unit tested.
+int presenceDelayMinutes(Random rng) => 25 + rng.nextInt(46);
 
 /// What the veto gate decided an opportunity should become.
 enum InitiativeMode { silent, chat, share }

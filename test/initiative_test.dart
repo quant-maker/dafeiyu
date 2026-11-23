@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:feiyu/companion/initiative.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -23,6 +25,24 @@ InitiativeOpportunity? _pick(
     );
 
 void main() {
+  group('presenceDelayMinutes', () {
+    test('stays in 25..70 minutes inclusive', () {
+      final rng = Random(2026);
+      for (var i = 0; i < 500; i++) {
+        final m = presenceDelayMinutes(rng);
+        expect(m, inInclusiveRange(25, 70));
+      }
+    });
+
+    test('is deterministic for a seeded Random', () {
+      final a = Random(42);
+      final b = Random(42);
+      for (var i = 0; i < 100; i++) {
+        expect(presenceDelayMinutes(a), presenceDelayMinutes(b));
+      }
+    });
+  });
+
   group('quiet hours', () {
     test('inQuietHours covers 00:00–07:29', () {
       expect(inQuietHours(DateTime(2026, 11, 20, 0)), isTrue);
