@@ -59,4 +59,28 @@ void main() {
     expect(find.byType(Pill), findsNothing);
     expect(tester.takeException(), isNull);
   });
+
+  test('footprintFromShare keeps the source as title and a 160-char body', () {
+    final at = DateTime(2026, 11, 23, 9, 5, 4);
+    final long = 'A' * 200;
+    final fp = footprintFromShare(source: 'HN', text: long, at: at);
+
+    expect(fp.title, 'HN');
+    expect(fp.mood, '🌐');
+    expect(fp.at, at);
+    expect(fp.id, at.microsecondsSinceEpoch.toString());
+    expect(fp.body, hasLength(160));
+    expect(fp.body, 'A' * 160);
+  });
+
+  test('footprintFromShare falls back to 网页 and trims the text', () {
+    final fp = footprintFromShare(
+      source: '   ',
+      text: '  she shared this  ',
+      at: DateTime(2026, 11, 23),
+    );
+
+    expect(fp.title, '网页');
+    expect(fp.body, 'she shared this');
+  });
 }

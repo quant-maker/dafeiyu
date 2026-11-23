@@ -89,27 +89,41 @@ function fetchPage(req, res) {
     res.writeHead(400, { 'content-type': 'application/json' })
     return res.end(JSON.stringify({ error: 'url must be http(s)' }))
   }
-  const limit = 8000
+  const HTML_LIMIT = 8000
+  const JSON_LIMIT = 512000
   const client = target.startsWith('https') ? https : http
   const request = client.get(
     target,
-    { headers: { 'user-agent': 'Mozilla/5.0 (compatible; feiyu/1.0)', accept: 'text/html,text/plain,*/*' }, timeout: 20000 },
+    // Prefer IPv4: some hosts resolve to an IPv6 address this machine cannot
+    // reach, which would otherwise hang until the timeout. The HTML output is
+    // unchanged; this only affects how the socket is dialed.
+    { family: 4, headers: { 'user-agent': 'Mozilla/5.0 (compatible; feiyu/1.0)', accept: 'text/html,text/plain,*/*' }, timeout: 20000 },
     (up) => {
       if (up.statusCode && up.statusCode >= 300 && up.statusCode < 400 && up.headers.location) {
         up.resume()
         res.writeHead(302, { location: up.headers.location })
         return res.end()
       }
+      // JSON feeds (HN / V2EX / GitHub) must pass through byte-for-byte: the
+      // tag-strip pipeline turns them into invalid JSON. HTML/text keeps the
+      // old strip + 8k path.
+      const isJson = String(up.headers['content-type'] || '').toLowerCase().includes('json')
+      const limit = isJson ? JSON_LIMIT : HTML_LIMIT
       const chunks = []
       let size = 0
       up.on('data', (c) => {
-        if (size < limit * 6) {
+        if (size < limit) {
           chunks.push(c)
           size += c.length
         }
       })
       up.on('end', () => {
         const raw = Buffer.concat(chunks).toString('utf8')
+        if (isJson) {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(raw.slice(0, JSON_LIMIT))
+          return
+        }
         const text = raw
           .replace(/<script[\s\S]*?<\/script>/gi, ' ')
           .replace(/<style[\s\S]*?<\/style>/gi, ' ')
@@ -121,7 +135,7 @@ function fetchPage(req, res) {
           .replace(/&amp;/g, '&')
           .replace(/\s+/g, ' ')
           .trim()
-          .slice(0, limit)
+          .slice(0, HTML_LIMIT)
         res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
         res.end(text)
       })

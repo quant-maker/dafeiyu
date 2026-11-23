@@ -50,6 +50,28 @@ class Footprint {
       '${at.hour.toString().padLeft(2, '0')}:${at.minute.toString().padLeft(2, '0')}';
 }
 
+/// Builds the footprint that records a share she just made.
+///
+/// [source] is the feed she pulled it from (`HN` / `V2EX` / `GitHub`), or
+/// `网页` when it did not come from the inbox. The body keeps the first 160
+/// characters of what she said so 足迹 shows the find, not the whole message.
+Footprint footprintFromShare({
+  required String source,
+  required String text,
+  required DateTime at,
+}) {
+  final title = source.trim().isEmpty ? '网页' : source.trim();
+  final trimmed = text.trim();
+  final body = trimmed.length > 160 ? trimmed.substring(0, 160) : trimmed;
+  return Footprint(
+    id: at.microsecondsSinceEpoch.toString(),
+    at: at,
+    title: title,
+    body: body,
+    mood: '🌐',
+  );
+}
+
 class FootprintStore {
   static const _k = 'feiyu.footprints.v1';
   static const maxEntries = 500;

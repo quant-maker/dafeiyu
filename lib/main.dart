@@ -2314,8 +2314,18 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       unawaited(ChatStore.save(_messages));
       _scrollToEnd();
       if (isShare) {
+        // Remember the find as a footprint so 足迹 shows what she shared.
+        final source =
+            _inbox.items.isNotEmpty ? _inbox.items.first.source : '网页';
         unawaited(_sharedUrls.remember(urls));
         unawaited(_inbox.markShared(urls));
+        final fp = footprintFromShare(
+          source: source,
+          text: said,
+          at: DateTime.now(),
+        );
+        setState(() => _footprints = [fp, ..._footprints]);
+        unawaited(FootprintStore.save(_footprints));
         debugPrint('[feiyu] share sent url=${urls.first}');
       }
       _startIgnoredCountdown();
