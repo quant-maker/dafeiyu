@@ -23,20 +23,21 @@ const String _v2exFixture = '''
 ]
 ''';
 
-const String _githubFixture = '''
-{"items":[
-  {"full_name":"a/one","html_url":"https://github.com/a/one"},
-  {"full_name":"a/two","html_url":"https://github.com/a/two"},
-  {"full_name":"a/three","html_url":"https://github.com/a/three"},
-  {"full_name":"a/four","html_url":"https://github.com/a/four"},
-  {"full_name":"a/five","html_url":"https://github.com/a/five"}
-]}
+const String _wscnFixture = '''
+{"code":20000,"data":{"items":[
+  {"resource_type":"article","resource":{"title":"A1","uri":"https://wallstreetcn.com/articles/1"}},
+  {"resource_type":"live","resource":{"title":"L1","content_text":"x","uri":"https://wallstreetcn.com/charts/2"}},
+  {"resource_type":"article","resource":{"title":"","content_short":"short only","uri":"https://wallstreetcn.com/articles/3"}},
+  {"resource_type":"article","resource":{"title":"A4","uri":"https://wallstreetcn.com/articles/4"}},
+  {"resource_type":"article","resource":{"title":"A5","uri":"https://wallstreetcn.com/articles/5"}},
+  {"resource_type":"article","resource":{"title":"A6","uri":"https://wallstreetcn.com/articles/6"}}
+]}}
 ''';
 
 Future<String?> _fixtureFetcher(String url) async {
   if (url == hnFrontPageUrl) return _hnFixture;
   if (url == v2exHotUrl) return _v2exFixture;
-  if (url == rollingGithubNewReposUrl()) return _githubFixture;
+  if (url == wallstreetcnUrl) return _wscnFixture;
   return null;
 }
 
@@ -47,7 +48,16 @@ void main() {
     expect(items, hasLength(12));
     expect(items.where((e) => e.source == 'HN'), hasLength(4));
     expect(items.where((e) => e.source == 'V2EX'), hasLength(4));
-    expect(items.where((e) => e.source == 'GitHub'), hasLength(4));
+    expect(items.where((e) => e.source == '华尔街见闻'), hasLength(4));
+  });
+
+  test('wallstreetcn falls back to content_short when title is blank',
+      () async {
+    final items = await fetchFeeds(httpGet: _fixtureFetcher);
+    expect(
+      items.any((e) => e.title == 'short only'),
+      isTrue,
+    );
   });
 
   test('HN falls back to the item discussion URL when url is null', () async {

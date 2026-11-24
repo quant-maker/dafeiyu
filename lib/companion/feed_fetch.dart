@@ -11,29 +11,20 @@ typedef JsonFetcher = Future<String?> Function(String url);
 const String hnFrontPageUrl =
     'https://hn.algolia.com/api/v1/search?tags=front_page';
 const String v2exHotUrl = 'https://www.v2ex.com/api/topics/hot.json';
-const String githubNewReposUrl =
-    'https://api.github.com/search/repositories?q=created:%3E2026-11-01&sort=stars&per_page=10';
 
-/// The same GitHub query with a *rolling* window.
+/// Wallstreetcn's public information flow.
 ///
-/// The literal date above was correct the day it was written and silently
-/// degrades into "no repositories" a few weeks later, so the living code path
-/// recomputes it. Kept beside the constant because the tests compare against
-/// [githubNewReposUrl].
-String rollingGithubNewReposUrl({DateTime? now, int days = 14}) {
-  final DateTime from =
-      (now ?? DateTime.now()).toUtc().subtract(Duration(days: days));
-  final String d =
-      '${from.year.toString().padLeft(4, '0')}-'
-      '${from.month.toString().padLeft(2, '0')}-'
-      '${from.day.toString().padLeft(2, '0')}';
-  return 'https://api.github.com/search/repositories'
-      '?q=created:%3E$d&sort=stars&per_page=10';
-}
+/// It replaces the old GitHub "new repos" source, which was unreachable from
+/// mainland networks (api.github.com resets the connection) and returned
+/// nothing usable even when it did answer. This one is fast, keyless, and fits
+/// her markets-and-quant character far better.
+const String wallstreetcnUrl =
+    'https://api-one-wscn.awtmt.com/apiv1/content/information-flow'
+    '?channel=global&accept=article&limit=10';
 
 const int _perSource = 4;
 
-/// Pulls headlines from HN, V2EX and GitHub.
+/// Pulls headlines from HN, V2EX and 华尔街见闻.
 ///
 /// Every source is parsed defensively: a bad response, a truncated body or a
 /// malformed field simply contributes nothing. This function never throws.
@@ -41,7 +32,7 @@ Future<List<FeedItem>> fetchFeeds({required JsonFetcher httpGet}) async {
   final out = <FeedItem>[];
   out.addAll(await _fetchHn(httpGet));
   out.addAll(await _fetchV2ex(httpGet));
-  out.addAll(await _fetchGitHub(httpGet));
+  out.addAll(await _fetchWallstreetcn(httpGet));
   return out;
 }
 
@@ -92,20 +83,30 @@ Future<List<FeedItem>> _fetchV2ex(JsonFetcher httpGet) async {
   }
 }
 
-Future<List<FeedItem>> _fetchGitHub(JsonFetcher httpGet) async {
+Future<List<FeedItem>> _fetchWallstreetcn(JsonFetcher httpGet) async {
   try {
-    final decoded = await _decode(httpGet, rollingGithubNewReposUrl());
+    final decoded = await _decode(httpGet, wallstreetcnUrl);
     if (decoded is! Map) return const <FeedItem>[];
-    final items = decoded['items'];
+    final data = decoded['data'];
+    if (data is! Map) return const <FeedItem>[];
+    final items = data['items'];
     if (items is! List) return const <FeedItem>[];
     final out = <FeedItem>[];
-    for (final repo in items) {
+    for (final entry in items) {
       if (out.length >= _perSource) break;
-      if (repo is! Map) continue;
-      final name = (repo['full_name'] ?? '').toString().trim();
-      final url = (repo['html_url'] ?? '').toString().trim();
-      if (name.isEmpty || url.isEmpty) continue;
-      out.add(FeedItem(title: name, url: url, source: 'GitHub'));
+      if (entry is! Map) continue;
+      // Articles and live flashes both carry their payload one level down.
+      final resource = entry['resource'];
+      if (resource is! Map) continue;
+      // A blank title (not just a missing one) must fall through to the short
+      // summary, otherwise flashes show up with nothing to say.
+      var title = (resource['title'] ?? '').toString().trim();
+      if (title.isEmpty) {
+        title = (resource['content_short'] ?? '').toString().trim();
+      }
+      final url = (resource['uri'] ?? '').toString().trim();
+      if (title.isEmpty || url.isEmpty) continue;
+      out.add(FeedItem(title: title, url: url, source: '华尔街见闻'));
     }
     return out;
   } catch (_) {

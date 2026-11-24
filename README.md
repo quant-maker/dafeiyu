@@ -21,36 +21,37 @@
 ## 目录
 
 ```
-lib/main.dart          全部客户端代码（Flutter）
-server/server.mjs      本地 Web 服务器：托管页面 + 反代 /v1（解决浏览器 CORS）
-tools/                 构建脚本（Windows / PowerShell）
-  build-web.ps1        编译 Web 版
-  build-apk.ps1        编译 Android APK（--split-per-abi）
+lib/                    Flutter 客户端（main.dart 为入口与核心编排）
+  ui/ scene/ voice/     界面、房间场景、语音
+  memory/ companion/    记忆归档、主动搭话引擎
+  feeds/ comfy/         足迹、ComfyUI 出图
+server/server.mjs       本地 Web 服务器：托管页面 + 反代 /v1（解决浏览器 CORS）
+tools/                  本地构建脚本（Windows / PowerShell，仅 Web）
+  build-web.ps1         编译 Web 版（在仓库根目录直接构建）
   install-toolchain.ps1 无管理员安装 JDK + Android SDK + Flutter
+.github/workflows/      CI：打 tag 时构建并发布 Android APK / macOS / Web
 ```
 
 ## 构建
 
-### Web
+本地只构建 Web；Android APK / macOS / Web 包由 GitHub Actions 在打 tag 时发布（见 `.github/workflows/build.yml`）。
 
-```bash
-flutter build web --release
-node server/server.mjs      # 打开 http://127.0.0.1:8090
+### Web（本地）
+
+```powershell
+tools\build-web.ps1          # 产物：build\web
+node server/server.mjs       # 打开 http://127.0.0.1:8090
 ```
 
 页面的 Base URL 会自动取当前 origin + `/v1`，直接走本地反代，不会被 CORS 拦。
 
-### Android
+### Android（CI）
 
-```bash
-flutter build apk --release --split-per-abi
-# 产物：build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
-```
+推 `v*` tag 或在 Actions 手动触发 `build` 工作流，会产出 arm64 APK 并挂到 Release，无需本地构建。
 
 ## 安全与边界
 
-- 构建脚本会从本地启动器读取网关 key 并**注入**到 `lib/main.dart`（替换 `__FEIYU_KEY__`）。
-  仓库里只保存占位符版本，**不要提交注入后的文件**。
+- 仓库里 `lib/main.dart` 只保存占位符 `__FEIYU_KEY__`。CI 在存在 `FEIYU_KEY` secret 时注入；本地 Web 构建不注入，首次运行在设置里手填 Key。
 - 把 Web 目录部署到公网前，务必改成运行时输入 Key，否则等于公开你的 Key。
 - 自动记忆会产生额外模型调用（每 3 轮一次，很短），可在设置里关闭。
 

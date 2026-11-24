@@ -47,6 +47,12 @@ enum InitiativeMode { silent, chat, share }
 /// are accepted, plus stray backticks or quotes around the marker.
 InitiativeMode parseVetoReply(String raw) {
   final t = raw.trim().toUpperCase().replaceAll('`', '').replaceAll('"', '');
+  // An explicit silence decision wins, and this also covers a weak model that
+  // merely echoed the whole menu ("SILENT / SPEAK:CHAT / SPEAK:SHARE"): if the
+  // reply mentions SILENT at all we must not treat it as a go-ahead to share.
+  if (t.contains('SILENT') || t.contains('SILENCE')) {
+    return InitiativeMode.silent;
+  }
   if (t.contains('SPEAK:SHARE') || t.contains('SPEAK：SHARE')) {
     return InitiativeMode.share;
   }

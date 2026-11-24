@@ -17,6 +17,7 @@ import 'package:speech_to_text/speech_to_text.dart';
 import 'companion/feed_fetch.dart';
 import 'companion/feed_inbox.dart';
 import 'companion/initiative.dart';
+import 'companion/initiative_budget.dart';
 import 'comfy/comfy.dart';
 import 'comfy/comfy_page.dart';
 import 'feeds/footprints.dart';
@@ -601,6 +602,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   int _proactiveToday = 0;
   int _opportunitiesToday = 0;
   int _ignoredStreak = 0;
+
+  /// Persisted mirror of the three counters above, so a relaunch does not hand
+  /// her a fresh daily allowance.
+  InitiativeBudget? _budget;
   bool _dayAnchorDone = false;
   bool _longSilenceDone = false;
   bool _dayAnchorPending = false;
@@ -620,6 +625,25 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _preview = kIsWeb && Uri.base.queryParameters['seed'] == '1';
     _scroll.addListener(_onScroll);
     _input.addListener(_noteInteraction);
+    InitiativeBudget.load().then((InitiativeBudget b) {
+      if (!mounted) return;
+      b.rollTo(DateTime.now());
+      _budget = b;
+      // Only adopt the stored counters when nothing has happened yet in this
+      // session; otherwise in-memory truth wins.
+      if (_proactiveToday == 0 && _opportunitiesToday == 0 && _ignoredStreak == 0) {
+        _day = b.day;
+        _proactiveToday = b.sent;
+        _opportunitiesToday = b.opportunities;
+        _ignoredStreak = b.ignoredStreak;
+        debugPrint(
+          '[feiyu] budget restored sent=${b.sent} '
+          'opp=${b.opportunities} ignored=${b.ignoredStreak}',
+        );
+      }
+    }).catchError((Object e) {
+      debugPrint('[feiyu] budget load FAILED: $e');
+    });
     SharedUrlStore.load().then((store) {
       if (mounted) _sharedUrls = store;
     }).catchError((Object e) {
@@ -771,6 +795,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (s != null) {
       await s.save();
       setState(() => _settings = s);
+      // Re-arm the single-shot presence check so toggling "主动开口" on takes
+      // effect immediately instead of waiting for the next outgoing message.
+      _armPresence();
     }
   }
 
@@ -1848,20 +1875,36 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _lastInteraction = DateTime.now();
   }
 
-  /// Arms exactly one presence check 25..70 minutes from now.
+  /// Arms exactly one idle check [_idleMinutes] minutes from now.
   ///
-  /// Single-shot on purpose: on web nothing fires when the tab just sits there,
-  /// so this is the only path that reaches [_consider] without a lifecycle
-  /// event. It is re-armed after each interaction, never on a timer.
+  /// The delay is user-configurable (设置 → 主动开口 → 空闲多久主动找你),
+  /// defaulting to 8 minutes and clamped to 3..120. Single-shot on purpose: on
+  /// web nothing fires when the tab just sits there, so this is the only path
+  /// that reaches [_consider] without a lifecycle event. It is re-armed after
+  /// each send, each interaction and after saving settings, never on a
+  /// repeating timer.
   void _armPresence() {
     if (_preview) return;
     _presenceTimer?.cancel();
+    if (_settings?.proactiveEnabled != true) {
+      _presenceArmedAt = null;
+      _setNextCheckLabel(null);
+      return;
+    }
     final now = DateTime.now();
-    final delay = presenceDelayMinutes(_rng);
+    final delay = _idleMinutes();
     _presenceArmedAt = now;
     _presenceTimer = Timer(Duration(minutes: delay), _onPresenceFire);
-    debugPrint('[feiyu] presence check armed in ${delay}m');
+    debugPrint('[feiyu] idle check armed in ${delay}m');
     _setNextCheckLabel(now.add(Duration(minutes: delay)));
+  }
+
+  /// The user's requested idle delay, clamped to a sane 3..120 minutes.
+  int _idleMinutes() {
+    final raw = _settings?.proactiveIdleMinutes ?? 8;
+    if (raw < 3) return 3;
+    if (raw > 120) return 120;
+    return raw;
   }
 
   void _onPresenceFire() {
@@ -1949,6 +1992,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _rollDay(now);
     _lastInteraction = now;
     _ignoredStreak = 0;
+    _persistBudget();
     _ignoredTimer?.cancel();
     _ignoredTimer = null;
     if (!_preview && !_dayAnchorDone) _dayAnchorPending = true;
@@ -1966,6 +2010,23 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _dayAnchorDone = false;
     _longSilenceDone = false;
     _afterthoughtUsedForTurn = false;
+    _persistBudget();
+  }
+
+  /// Writes the in-memory counters through to [InitiativeBudget].
+  ///
+  /// Fire-and-forget: a failed write only costs the next launch its head start,
+  /// and the in-memory values keep governing this session.
+  void _persistBudget() {
+    final InitiativeBudget budget = _budget ??= InitiativeBudget(
+      day: DateTime.now(),
+    );
+    budget
+      ..day = _day ?? budget.day
+      ..sent = _proactiveToday
+      ..opportunities = _opportunitiesToday
+      ..ignoredStreak = _ignoredStreak;
+    unawaited(budget.save());
   }
 
   /// A promise to come back later becomes one single-shot opportunity.
@@ -2087,6 +2148,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       final last = _lastInteraction;
       if (last != null && last.isAfter(firedAt)) return;
       _ignoredStreak++;
+      _persistBudget();
       debugPrint('[feiyu] no reply in 10m, ignored streak → $_ignoredStreak');
     });
   }
@@ -2112,6 +2174,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (trigger == InitiativeTrigger.longSilence) _longSilenceDone = true;
 
     _opportunitiesToday++;
+    _persistBudget();
     final status = await _runInitiative(trigger, reason: reason);
     if (mounted) setState(() => _lastInitiativeStatus = status);
   }
@@ -2250,8 +2313,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       );
       return mode;
     } catch (e) {
-      debugPrint('[feiyu] veto ${trigger.name} failed: $e');
-      return InitiativeMode.silent;
+      // The gate is speak-biased on purpose ("能说话就说"). If we cannot get an
+      // opinion at all (timeout / provider hiccup), fall through to chatting
+      // instead of silently doing nothing. Daily caps still prevent any
+      // runaway, and a truly broken provider will surface as "失败：..." later.
+      debugPrint('[feiyu] veto ${trigger.name} failed, defaulting to chat: $e');
+      return InitiativeMode.chat;
     }
   }
 
@@ -2311,6 +2378,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         _lastProactiveAt = DateTime.now();
         _messages.add(Message('assistant', said));
       });
+      _persistBudget();
       unawaited(ChatStore.save(_messages));
       _scrollToEnd();
       if (isShare) {
@@ -3317,7 +3385,15 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    // Back (app-bar arrow or system gesture) must persist too, otherwise a
+    // toggled switch is silently discarded because the route pops with null.
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _save();
+      },
+      child: Scaffold(
       backgroundColor: AppPalette.ink,
       appBar: AppBar(
         title: const Text('设置'),
@@ -3794,7 +3870,10 @@ class _SettingsPageState extends State<SettingsPage> {
                     ? '你不说话时，它会按自己的节奏主动搭话'
                     : '打开后，你不说话时它会主动找你',
                 value: _proactiveEnabled,
-                onChanged: (v) => setState(() => _proactiveEnabled = v),
+                onChanged: (v) async {
+                  setState(() => _proactiveEnabled = v);
+                  await _persist();
+                },
               ),
               if (_proactiveEnabled) ...[
                 const SizedBox(height: 10),
@@ -3802,7 +3881,39 @@ class _SettingsPageState extends State<SettingsPage> {
                   title: '主动分享新鲜事',
                   subtitle: '会真的上网找一条，而不是编',
                   value: _proactiveShareEnabled,
-                  onChanged: (v) => setState(() => _proactiveShareEnabled = v),
+                  onChanged: (v) async {
+                    setState(() => _proactiveShareEnabled = v);
+                    await _persist();
+                  },
+                ),
+                const SizedBox(height: 14),
+                SettingsRow(
+                  label: '空闲多久主动找你',
+                  description: '安静这么久后，她会考虑说句话',
+                  child: DropdownButton<int>(
+                    value: _proactiveIdleMinutes,
+                    isExpanded: true,
+                    items: (<int>{
+                      3,
+                      5,
+                      8,
+                      15,
+                      30,
+                      60,
+                      _proactiveIdleMinutes,
+                    }.toList()
+                          ..sort())
+                        .map((m) => DropdownMenuItem<int>(
+                              value: m,
+                              child: Text('$m 分钟'),
+                            ))
+                        .toList(),
+                    onChanged: (m) async {
+                      if (m == null) return;
+                      setState(() => _proactiveIdleMinutes = m);
+                      await _persist();
+                    },
+                  ),
                 ),
               ],
               const SizedBox(height: 6),
@@ -3811,6 +3922,16 @@ class _SettingsPageState extends State<SettingsPage> {
                 key: const ValueKey('settings-inbox-count'),
                 style: AppType.caption.copyWith(color: AppPalette.text3),
               ),
+              if (widget.inboxCount == 0 && _proactiveShareEnabled)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    kIsWeb
+                        ? '发现箱为空：Web 版需先用 node server/server.mjs 打开（靠 /fetch 反代才能抓热点），否则只能闲聊不能分享。'
+                        : '发现箱为空：网络或来源（HN/V2EX/GitHub）暂时抓不到，后台会每 1.5–3 小时自动重试。',
+                    style: AppType.caption.copyWith(color: AppPalette.text3),
+                  ),
+                ),
               const SizedBox(height: 10),
               Text(
                 _initiativeStatus ?? '还没有试过',
@@ -4021,6 +4142,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
           ),
         ],
+      ),
       ),
     );
   }

@@ -281,5 +281,16 @@ void main() {
       expect(parseVetoReply(''), InitiativeMode.silent);
       expect(parseVetoReply('我不知道'), InitiativeMode.silent);
     });
+
+    test('an echo listing every option is silent, not share', () {
+      expect(
+        parseVetoReply('SILENT / SPEAK:CHAT / SPEAK:SHARE'),
+        InitiativeMode.silent,
+      );
+    });
+
+    test('a speak token inside an explanation still counts', () {
+      expect(parseVetoReply('我想说一句，SPEAK:CHAT'), InitiativeMode.chat);
+    });
   });
 }

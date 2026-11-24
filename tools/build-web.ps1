@@ -1,86 +1,41 @@
+# Builds the Web bundle from THIS repo (dafeiyu).
+# Local builds are web-only. Android APKs / macOS / Web release zips are
+# produced by GitHub Actions (.github/workflows/build.yml) when a v* tag is
+# pushed or the workflow is run manually.
 $ErrorActionPreference = 'Continue'
 $root = 'C:\Users\xqli\Documents\deepseek-harness\default-workspace\tools'
-$ws = 'C:\Users\xqli\Documents\deepseek-harness\default-workspace'
+$repo = Split-Path $PSScriptRoot -Parent
 $log = Join-Path $root 'web.log'
 function Log($m) { $line = "$((Get-Date).ToString('HH:mm:ss')) $m"; Add-Content -Path $log -Value $line; Write-Output $line }
 
 $env:FLUTTER_ROOT = Join-Path $root 'flutter'
-$env:JAVA_HOME = Join-Path $root 'jdk'
-$env:ANDROID_HOME = Join-Path $root 'android-sdk'
-$env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
-$env:Path = (Join-Path $root 'jdk\bin') + ';' + (Join-Path $root 'flutter\bin') + ';' + $env:Path
-$env:PUB_HOSTED_URL = 'https://pub.dev'
-$env:FLUTTER_STORAGE_BASE_URL = 'https://storage.flutter-io.cn'
 $env:APPDATA = Join-Path $root 'appdata'
-New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
+$env:PUB_CACHE = Join-Path $root 'pub-cache'
+$env:FLUTTER_STORAGE_BASE_URL = 'https://storage.flutter-io.cn'
 $env:DART_SUPPRESS_ANALYTICS = 'true'
 $env:FLUTTER_SUPPRESS_ANALYTICS = 'true'
-$tmp = Join-Path $ws 'tmp'; New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
+$tmp = Join-Path (Split-Path $repo -Parent) 'tmp'
+New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $env:TMP = $tmp; $env:TEMP = $tmp
-$env:PUB_CACHE = Join-Path $root 'pub-cache'
-$env:GRADLE_USER_HOME = Join-Path $root 'gradle-home'
-$env:ANDROID_USER_HOME = Join-Path $root 'android-user'
 
 $dart = Join-Path $root 'flutter\bin\cache\dart-sdk\bin\dart.exe'
 $snap = Join-Path $root 'flutter\bin\cache\flutter_tools.snapshot'
-function Flutter { param([string[]]$a) & $dart $snap @a 2>&1 }
 
-$app = Join-Path $ws 'feiyu_app'
-Push-Location $app
+Push-Location $repo
 try {
-  if (-not (Test-Path (Join-Path $app 'web\index.html'))) {
-    Log 'adding web platform'
-    Flutter @('create', '--platforms', 'web', '--no-pub', '.') | Select-Object -Last 5 | ForEach-Object { Log "  $_" }
-  }
-  # pub get only when the dependency spec actually changed: it costs ~20s.
-  $pubspec = Join-Path $app 'pubspec.yaml'
-  $hashFile = Join-Path $root '.web-pub-hash'
-  $hash = (Get-FileHash $pubspec -Algorithm SHA256).Hash
-  $prev = if (Test-Path $hashFile) { (Get-Content $hashFile -Raw).Trim() } else { '' }
-  $lock = Join-Path $app 'pubspec.lock'
-  if ($hash -ne $prev -or -not (Test-Path $lock)) {
-    Log 'pub get'
-    Flutter @('pub', 'get') | Select-Object -Last 4 | ForEach-Object { Log "  $_" }
-    Set-Content -Path $hashFile -Value $hash -NoNewline
-  } else {
-    Log 'pub get skipped (deps unchanged)'
-  }
+  Log 'flutter build web --release'
+  & $dart $snap build web --release --pwa-strategy=none --no-wasm-dry-run 2>&1 |
+    ForEach-Object { Log "  $_" }
+  if ($LASTEXITCODE -ne 0) { throw 'flutter build web failed' }
 
-  # Sync source and inject the gateway key from the local launcher (never printed).
-  # NOTE: Copy-Item nests a directory when the destination already exists, so the
-  # destination is removed first — otherwise a stale copy keeps getting compiled.
-  Copy-Item (Join-Path $ws 'feiyu_app_src\main.dart') (Join-Path $app 'lib\main.dart') -Force
-  foreach ($sub in @('scene', 'memory', 'feeds', 'voice', 'comfy')) {
-    $src = Join-Path $ws "feiyu_app_src\$sub"
-    if (-not (Test-Path $src)) { continue }
-    $dst = Join-Path $app "lib\$sub"
-    Remove-Item $dst -Recurse -Force -ErrorAction SilentlyContinue
-    Copy-Item $src $dst -Recurse -Force
-  }
-  Copy-Item (Join-Path $ws 'feiyu_app_src\providers.dart') (Join-Path $app 'lib\providers.dart') -Force
-  $wrapper = Join-Path $env:USERPROFILE '.local\bin\claude'
-  $mm = if (Test-Path $wrapper) { Select-String -Path $wrapper -Pattern '^GW_TOKEN="\$\{GW_TOKEN:-(.+)\}"' } else { $null }
-  if ($mm) {
-    $key = $mm.Matches[0].Groups[1].Value
-    $mf = Join-Path $app 'lib\main.dart'
-    $src = [IO.File]::ReadAllText($mf)
-    [IO.File]::WriteAllText($mf, $src.Replace('__FEIYU_KEY__', $key), (New-Object Text.UTF8Encoding($false)))
-    Log 'key injected into lib/main.dart'
-  } else {
-    Log 'WARN: gateway key not found; app will ask for it'
-  }
-
-  Log 'build web --release'
-  Flutter @('build', 'web', '--release', '--pwa-strategy=none', '--no-wasm-dry-run') | ForEach-Object { Log "  $_" }
-  $out = Join-Path $app 'build\web'
+  $out = Join-Path $repo 'build\web'
   # sherpa-onnx ships a 14 MB wasm we never use on web (local ASR is native only).
   $dead = Join-Path $out 'assets\packages\sherpa_onnx_web'
   if (Test-Path $dead) { Remove-Item $dead -Recurse -Force; Log 'pruned sherpa web assets' }
-  if (Test-Path (Join-Path $out 'index.html')) {
-    $size = [math]::Round(((Get-ChildItem $out -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB, 1)
-    Log "WEB OK: $out ($size MB)"
-  } else {
-    Log 'WEB BUILD FAILED'
-  }
+  if (-not (Test-Path (Join-Path $out 'index.html'))) { throw 'no build/web/index.html' }
+
+  $size = [math]::Round(((Get-ChildItem $out -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB, 1)
+  Log "WEB OK: $out ($size MB)"
 } finally { Pop-Location }
 Log 'WEB DONE'
