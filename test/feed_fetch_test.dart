@@ -36,7 +36,7 @@ const String _githubFixture = '''
 Future<String?> _fixtureFetcher(String url) async {
   if (url == hnFrontPageUrl) return _hnFixture;
   if (url == v2exHotUrl) return _v2exFixture;
-  if (url == githubNewReposUrl) return _githubFixture;
+  if (url == rollingGithubNewReposUrl()) return _githubFixture;
   return null;
 }
 

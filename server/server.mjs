@@ -94,10 +94,11 @@ function fetchPage(req, res) {
   const client = target.startsWith('https') ? https : http
   const request = client.get(
     target,
-    // Prefer IPv4: some hosts resolve to an IPv6 address this machine cannot
-    // reach, which would otherwise hang until the timeout. The HTML output is
-    // unchanged; this only affects how the socket is dialed.
-    { family: 4, headers: { 'user-agent': 'Mozilla/5.0 (compatible; feiyu/1.0)', accept: 'text/html,text/plain,*/*' }, timeout: 20000 },
+    // Let Node choose the address family (autoSelectFamily does happy-eyeballs).
+    // Pinning family:4 broke hosts whose IPv4 path is blackholed while IPv6
+    // works: www.v2ex.com/api hung for the full 20s that way, then answered in
+    // ~270ms once the pin was removed.
+    { headers: { 'user-agent': 'Mozilla/5.0 (compatible; feiyu/1.0)', accept: 'text/html,text/plain,*/*' }, timeout: 20000 },
     (up) => {
       if (up.statusCode && up.statusCode >= 300 && up.statusCode < 400 && up.headers.location) {
         up.resume()

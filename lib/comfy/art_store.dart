@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// One generated picture she made, kept only on this device.
@@ -21,10 +22,39 @@ class ArtItem {
   final String b64;
 
   /// Decoded PNG bytes, ready for `Image.memory`.
-  Uint8List get bytes => base64Decode(b64);
+  ///
+  /// Decoded once and memoised. The gallery calls this from `build()`, so a
+  /// fresh decode per access meant re-decoding up to 8 PNGs (several MB) on the
+  /// UI thread on every rebuild — and it also handed `Image.memory` a new
+  /// [Uint8List] each time, which defeats its `MemoryImage` cache key.
+  Uint8List get bytes => _bytes ??= _decode();
+
+  Uint8List? _bytes;
+
+  Uint8List _decode() {
+    try {
+      return base64Decode(b64);
+    } catch (_) {
+      return Uint8List(0);
+    }
+  }
 
   /// Raw byte size of the decoded image, used to enforce the storage caps.
-  int get byteSize => base64Decode(b64).length;
+  ///
+  /// Computed from the base64 length (padding subtracted) instead of decoding:
+  /// [_enforce] asks for it in a fold and in a loop, so decoding here was
+  /// quadratic and could throw on corrupt data.
+  int get byteSize {
+    final int n = b64.length;
+    if (n == 0) return 0;
+    int pad = 0;
+    if (b64.codeUnitAt(n - 1) == 0x3D) pad++; // '='
+    if (n >= 2 && b64.codeUnitAt(n - 2) == 0x3D) pad++;
+    return (n ~/ 4) * 3 - pad;
+  }
+
+  /// Whether [b64] really decodes to something an `Image` can show.
+  bool get isUsable => bytes.isNotEmpty;
 
   /// `HH:mm`
   String get timeLabel =>
@@ -58,7 +88,11 @@ class ArtStore {
   static const String key = 'feiyu.art.v1';
   static const int maxItems = 8;
   static const int maxItemBytes = 800 * 1024;
-  static const int maxTotalBytes = 3 * 1024 * 1024;
+
+  /// Base64 inflates bytes by ~1.33x, so 3 MB of pixels is ~4 MB of JSON — on
+  /// web that is `localStorage`'s whole budget and would starve settings,
+  /// memory and the feed inbox. Native has no such limit.
+  static int get maxTotalBytes => kIsWeb ? 1500 * 1024 : 3 * 1024 * 1024;
 
   /// Newest first.
   final List<ArtItem> items = <ArtItem>[];
@@ -92,6 +126,9 @@ class ArtStore {
         // Corrupt data: start from an empty wall.
       }
     }
+    // Entries whose base64 no longer decodes would render as a broken tile and
+    // make `Image.memory` throw during layout, so drop them here.
+    store.items.removeWhere((ArtItem e) => !e.isUsable);
     store._enforce();
     return store;
   }

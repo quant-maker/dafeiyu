@@ -14,6 +14,23 @@ const String v2exHotUrl = 'https://www.v2ex.com/api/topics/hot.json';
 const String githubNewReposUrl =
     'https://api.github.com/search/repositories?q=created:%3E2026-11-01&sort=stars&per_page=10';
 
+/// The same GitHub query with a *rolling* window.
+///
+/// The literal date above was correct the day it was written and silently
+/// degrades into "no repositories" a few weeks later, so the living code path
+/// recomputes it. Kept beside the constant because the tests compare against
+/// [githubNewReposUrl].
+String rollingGithubNewReposUrl({DateTime? now, int days = 14}) {
+  final DateTime from =
+      (now ?? DateTime.now()).toUtc().subtract(Duration(days: days));
+  final String d =
+      '${from.year.toString().padLeft(4, '0')}-'
+      '${from.month.toString().padLeft(2, '0')}-'
+      '${from.day.toString().padLeft(2, '0')}';
+  return 'https://api.github.com/search/repositories'
+      '?q=created:%3E$d&sort=stars&per_page=10';
+}
+
 const int _perSource = 4;
 
 /// Pulls headlines from HN, V2EX and GitHub.
@@ -77,7 +94,7 @@ Future<List<FeedItem>> _fetchV2ex(JsonFetcher httpGet) async {
 
 Future<List<FeedItem>> _fetchGitHub(JsonFetcher httpGet) async {
   try {
-    final decoded = await _decode(httpGet, githubNewReposUrl);
+    final decoded = await _decode(httpGet, rollingGithubNewReposUrl());
     if (decoded is! Map) return const <FeedItem>[];
     final items = decoded['items'];
     if (items is! List) return const <FeedItem>[];
@@ -104,15 +121,29 @@ Future<Object?> _decode(JsonFetcher httpGet, String url) async {
 
 /// Production wiring: on web the same-origin `/fetch?url=` proxy hides CORS;
 /// on native the URL is fetched directly.
+///
+/// GitHub's search API (and some others) reject requests without a real
+/// User-Agent, so always send one.
 Future<String?> defaultJsonFetcher(String url) async {
   final target =
       kIsWeb ? '${Uri.base.origin}/fetch?url=${Uri.encodeComponent(url)}' : url;
   try {
     final res = await http
-        .get(Uri.parse(target), headers: const {'accept': 'application/json'})
+        .get(
+          Uri.parse(target),
+          headers: const {
+            'accept': 'application/json',
+            'user-agent': 'feiyu/1.0 (AI companion client)',
+          },
+        )
         .timeout(const Duration(seconds: 12));
     if (res.statusCode != 200) return null;
-    return utf8.decode(res.bodyBytes, allowMalformed: true);
+    final body = utf8.decode(res.bodyBytes, allowMalformed: true);
+    // A misconfigured web build can return the SPA index.html at /fetch;
+    // treat anything that is obviously HTML as a miss instead of trying to
+    // jsonDecode it.
+    if (body.trimLeft().startsWith('<')) return null;
+    return body;
   } catch (_) {
     return null;
   }
