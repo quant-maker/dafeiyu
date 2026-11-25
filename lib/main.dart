@@ -26,7 +26,7 @@ import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'memory/curator.dart';
 import 'memory/db.dart' show Fact;
-import 'memory/digest.dart' show looksSensitive;
+import 'memory/digest.dart' show factExtractionPrompt, looksSensitive, parseFactDrafts;
 import 'memory/export.dart';
 import 'memory/galaxy_page.dart';
 import 'memory/health_page.dart';
@@ -2563,25 +2563,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           'model': s.model,
           'stream': false,
           'messages': [
-            {
-              'role': 'system',
-              'content': '从下面这段对话里，只提取关于「主人」的、长期有效的事实（称呼、偏好、习惯、项目、约定）。'
-                  '每条一行，不超过 20 字，最多 3 条。没有就输出「无」。不要输出解释。'
-            },
-            {'role': 'user', 'content': recent},
+            {'role': 'user', 'content': factExtractionPrompt(recent)},
           ],
         }),
       );
       if (res.statusCode != 200) return;
       final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
       final raw = ((j['choices'] as List).first['message'] as Map)['content'] as String? ?? '';
-      final lines = raw
-          .split('\n')
-          .map((l) => l.replaceFirst(RegExp(r'^[\-\*\d\.\s]+'), '').trim())
-          .where((l) => l.isNotEmpty && l != '无')
-          .toList();
-      if (lines.isEmpty) return;
-      await _store?.mergeFacts(lines, localOnly: looksSensitive(recent));
+      final drafts = parseFactDrafts(raw).where((d) => d.text != '无').take(4).toList();
+      if (drafts.isEmpty) return;
+      await _store?.mergeFactDrafts(drafts, localOnly: looksSensitive(recent));
       await _reloadMemory();
     } catch (_) {}
   }
@@ -2832,7 +2823,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final s = _settings;
     final store = _store;
     if (s == null || store == null) return '还没有设置，无法检索';
-    final vector = await _embedder(s).embed(query);
+    final vector = await _embedQuery(s, query);
     final hits = await store.search(vector: vector, keyword: query, k: 3);
     if (hits.isEmpty) return '没有找到相关的旧记录';
     String day(int ms) {
@@ -2841,6 +2832,27 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
 
     return '找到这些旧记录：\n${hits.map((e) => '【${day(e.at)}】${e.body}').join('\n\n')}';
+  }
+
+  /// 检索向量的短期缓存：网关一次 embedding 要 150–570ms，同一句话反复问很常见。
+  ///
+  /// 只缓存最近 [vecCacheMax] 条，命中后挪到队尾（LRU）。查询文本没变，向量就不会变。
+  final Map<String, List<double>> _vecCache = <String, List<double>>{};
+  static const int vecCacheMax = 48;
+
+  Future<List<double>> _embedQuery(Settings s, String text) async {
+    final key = text.trim().toLowerCase();
+    final hit = _vecCache.remove(key);
+    if (hit != null) {
+      _vecCache[key] = hit;
+      return hit;
+    }
+    final v = await _embedder(s).embed(text) ?? const <double>[];
+    if (v.isNotEmpty) {
+      _vecCache[key] = v;
+      if (_vecCache.length > vecCacheMax) _vecCache.remove(_vecCache.keys.first);
+    }
+    return v;
   }
 
   // ---------------- footprints ----------------

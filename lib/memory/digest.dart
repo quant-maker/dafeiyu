@@ -76,10 +76,70 @@ String factExtractionPrompt(String transcript) => '''
 不要抽：一次性的情绪、当下的临时状态、我已经知道的一般常识、推测。
 没有新事实就输出空数组。
 
-只输出 JSON 数组：["…","…"]
+每条写成对象：{"text": 完整的一句中文, "subject": 主体, "predicate": 属性或关系, "object": 具体取值}
+subject 填这条说的是谁或什么（例如「主人」「她的猫」「量化项目」），predicate 填「所在城市」「生日」「喜欢」这类属性，
+object 填那个属性的具体值。三个字段都尽量填，实在拆不出就只给 text。
+
+只输出 JSON 数组，不要解释：
 
 对话：
 $transcript''';
+
+/// 一条待入库的事实：正文 + 可选的三元结构。
+///
+/// 拆成主谓宾是为了让「同一件事的两种说法」能被认出来（体检里的「说法打架」全靠它）。
+class FactDraft {
+  final String text;
+  final String? subject;
+  final String? predicate;
+  final String? object;
+
+  const FactDraft(this.text, {this.subject, this.predicate, this.object});
+
+  bool get hasTriple =>
+      (subject ?? '').trim().isNotEmpty &&
+      (predicate ?? '').trim().isNotEmpty &&
+      (object ?? '').trim().isNotEmpty;
+}
+
+/// 解析事实抽取结果，兼容三种形态：带三元结构的对象数组、纯字符串数组、分行文本。
+List<FactDraft> parseFactDrafts(String raw) {
+  if (_looksLikeJsonArray(raw)) {
+    final data = _decode(extractJsonArray(raw));
+    if (data is List) {
+      final out = <FactDraft>[];
+      for (final e in data) {
+        if (e is Map) {
+          final text = (e['text'] ?? e['content'] ?? e['fact'] ?? '').toString().trim();
+          if (text.isEmpty) continue;
+          out.add(FactDraft(
+            text,
+            subject: _opt(e['subject']),
+            predicate: _opt(e['predicate']),
+            object: _opt(e['object']),
+          ));
+        } else {
+          final text = e.toString().trim();
+          if (text.isNotEmpty) out.add(FactDraft(text));
+        }
+      }
+      return out;
+    }
+  }
+  return cleanModelText(raw)
+      .split(RegExp(r'[\n；;]+'))
+      .map((e) => e.replaceFirst(RegExp(r'^[-*\d.、\s]+'), '').trim())
+      .where((e) => e.isNotEmpty)
+      .map((e) => FactDraft(e))
+      .toList();
+}
+
+String? _opt(Object? raw) {
+  if (raw == null) return null;
+  final t = raw.toString().trim();
+  return t.isEmpty ? null : t;
+}
+
 
 /// 把模型输出里夹带的 ```json 围栏、前后说明剥掉，取第一个完整的 JSON 数组。
 String extractJsonArray(String raw) {
@@ -147,23 +207,7 @@ List<EpisodeDraft> parseEpisodeDrafts(String raw) {
 }
 
 /// 解析字符串数组（事实抽取）。
-List<String> parseFactLines(String raw) {
-  if (_looksLikeJsonArray(raw)) {
-    final data = _decode(extractJsonArray(raw));
-    if (data is List) {
-      return data
-          .map((e) => e is Map ? (e['text'] ?? e['content'] ?? '').toString() : e.toString())
-          .map((e) => e.trim())
-          .where((e) => e.isNotEmpty)
-          .toList();
-    }
-  }
-  return cleanModelText(raw)
-      .split(RegExp(r'[\n；;]+'))
-      .map((e) => e.replaceFirst(RegExp(r'^[-*\d.、\s]+'), '').trim())
-      .where((e) => e.isNotEmpty)
-      .toList();
-}
+List<String> parseFactLines(String raw) => parseFactDrafts(raw).map((d) => d.text).toList();
 
 /// 去掉代码块围栏、开头的客套话，只留下正文。
 String cleanModelText(String raw) {

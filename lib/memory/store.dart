@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'db.dart';
 import 'db_conn.dart';
+import 'digest.dart' show FactDraft;
 import 'graph.dart';
 import 'scoring.dart';
 import 'timeline.dart';
@@ -78,19 +79,34 @@ class MemoryStore {
     return '你记得关于主人的这些事（长期记忆，自然使用，不要逐条复述）：\n${lines.join('\n')}';
   }
 
-  Future<void> addFact(String text, {int importance = 3, bool localOnly = false}) async {
+  Future<void> addFact(
+    String text, {
+    int importance = 3,
+    bool localOnly = false,
+    String? subject,
+    String? predicate,
+    String? object,
+  }) async {
     final t = text.trim();
     if (t.isEmpty) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     await db.into(db.facts).insert(
           FactsCompanion.insert(
             content: t,
+            subject: dr.Value(_clean(subject)),
+            predicate: dr.Value(_clean(predicate)),
+            object: dr.Value(_clean(object)),
             importance: dr.Value(importance),
             firstSeen: now,
             lastSeen: now,
             localOnly: dr.Value(localOnly),
           ),
         );
+  }
+
+  static String? _clean(String? s) {
+    final t = (s ?? '').trim();
+    return t.isEmpty ? null : t;
   }
 
   Future<void> updateFactText(int id, String text) async {
@@ -115,11 +131,23 @@ class MemoryStore {
     Iterable<String> incoming, {
     int maxRows = 200,
     bool localOnly = false,
+  }) =>
+      mergeFactDrafts(
+        incoming.map(FactDraft.new),
+        maxRows: maxRows,
+        localOnly: localOnly,
+      );
+
+  /// 带主谓宾的合并：命中旧条目时顺手把三元结构补上（老数据都是纯文本）。
+  Future<void> mergeFactDrafts(
+    Iterable<FactDraft> incoming, {
+    int maxRows = 200,
+    bool localOnly = false,
   }) async {
     final existing = await facts();
     final now = DateTime.now().millisecondsSinceEpoch;
-    for (final raw in incoming) {
-      final t = raw.trim();
+    for (final draft in incoming) {
+      final t = draft.text.trim();
       if (t.isEmpty) continue;
       Fact? hit;
       for (final f in existing) {
@@ -133,6 +161,9 @@ class MemoryStore {
         final id = await db.into(db.facts).insert(
               FactsCompanion.insert(
                 content: t,
+                subject: dr.Value(_clean(draft.subject)),
+                predicate: dr.Value(_clean(draft.predicate)),
+                object: dr.Value(_clean(draft.object)),
                 importance: const dr.Value(3),
                 firstSeen: now,
                 lastSeen: now,
@@ -146,6 +177,10 @@ class MemoryStore {
             hitCount: dr.Value(hit.hitCount + 1),
             lastSeen: dr.Value(now),
             importance: dr.Value((hit.importance + 1).clamp(1, 5)),
+            // 旧的纯文本条目第一次拿到结构时补上，已有的不覆盖。
+            subject: hit.subject == null ? dr.Value(_clean(draft.subject)) : const dr.Value.absent(),
+            predicate: hit.predicate == null ? dr.Value(_clean(draft.predicate)) : const dr.Value.absent(),
+            object: hit.object == null ? dr.Value(_clean(draft.object)) : const dr.Value.absent(),
           ),
         );
       }
@@ -710,6 +745,35 @@ class MemoryStore {
     );
   }
 
+  /// 在一组互相打架的说法里定一条为准：保留的抬重要度并刷新时间，其余打上失效时间。
+  Future<void> keepFact(int keepId, Iterable<int> dropIds, {DateTime? at}) async {
+    final now = at ?? DateTime.now();
+    final keep = await (db.select(db.facts)..where((f) => f.id.equals(keepId))).getSingleOrNull();
+    if (keep == null) return;
+    await (db.update(db.facts)..where((f) => f.id.equals(keepId))).write(
+      FactsCompanion(
+        importance: dr.Value(keep.importance >= 4 ? keep.importance : 4),
+        hitCount: dr.Value(keep.hitCount + 1),
+        lastSeen: dr.Value(now.millisecondsSinceEpoch),
+        invalidatedAt: const dr.Value(null),
+      ),
+    );
+    for (final id in dropIds) {
+      if (id == keepId) continue;
+      await invalidateFact(id, at: now);
+    }
+  }
+
+  /// 把一颗快灭的星重新点亮：不靠增量叠加，直接抬到 1.0。
+  Future<void> keepEntity(int id, {DateTime? at}) async {
+    await (db.update(db.entities)..where((e) => e.id.equals(id))).write(
+      EntitiesCompanion(
+        strength: dr.Value(1.0),
+        lastTouched: dr.Value((at ?? DateTime.now()).millisecondsSinceEpoch),
+      ),
+    );
+  }
+
   Future<int> entityCount() async {
     final c = db.entities.id.count();
     final row = await (db.selectOnly(db.entities)..addColumns([c])).getSingle();
@@ -896,7 +960,7 @@ class MemoryStore {
     final eps = await episodes(limit: 2000);
     final stars = await entities(limit: 800);
 
-    // 同一主谓却有不同宾语 → 说法打架。
+    // 同一主谓却有不同宾语 → 说法打架。带着原始 Fact 一起返回，界面才能「以这条为准」。
     final groups = <String, List<Fact>>{};
     for (final f in facts) {
       final subj = (f.subject ?? '').trim();
@@ -905,22 +969,22 @@ class MemoryStore {
       if (subj.isEmpty || pred.isEmpty || obj.isEmpty) continue;
       groups.putIfAbsent('$subj|$pred', () => <Fact>[]).add(f);
     }
-    final conflicts = <String>[];
+    final conflicts = <FactConflict>[];
     for (final entry in groups.entries) {
       final objs = entry.value.map((f) => (f.object ?? '').trim()).toSet();
       if (objs.length > 1) {
-        final label = entry.key.replaceFirst('|', ' 的 ');
-        conflicts.add('$label：${objs.join(' / ')}');
+        final parts = entry.key.split('|');
+        conflicts.add(FactConflict(subject: parts.first, predicate: parts.length > 1 ? parts[1] : '', facts: entry.value));
         if (conflicts.length >= 5) break;
       }
     }
 
     // 超过 30 天没被碰过、而且本来就淡的星。
     final staleCutoff = at.subtract(const Duration(days: 30)).millisecondsSinceEpoch;
-    final stale = <String>[];
+    final stale = <Entity>[];
     for (final s in stars) {
       if (s.lastTouched < staleCutoff && s.strength < 1.0) {
-        stale.add(s.name);
+        stale.add(s);
         if (stale.length >= 5) break;
       }
     }
@@ -960,8 +1024,8 @@ class MemoryHealth {
   final int localOnly;
   final int oldestAt;
   final int newestAt;
-  final List<String> conflicts;
-  final List<String> staleStars;
+  final List<FactConflict> conflicts;
+  final List<Entity> staleStars;
   final int generatedAt;
 
   const MemoryHealth({
@@ -993,4 +1057,22 @@ class MemoryHealth {
             .inDays +
         1;
   }
+}
+
+/// 一组互相打架的说法：主语和谓语相同，宾语不同。
+///
+/// 带上原始的 [Fact]，界面才能让人选「以哪条为准」，其余的打上失效时间。
+class FactConflict {
+  final String subject;
+  final String predicate;
+  final List<Fact> facts;
+
+  const FactConflict({required this.subject, required this.predicate, required this.facts});
+
+  String get label => predicate.isEmpty ? subject : '$subject 的 $predicate';
+
+  List<String> get values => facts.map((f) => (f.object ?? '').trim()).toList();
+
+  /// 一句话概括，测试和日志用。
+  String get summary => '$label：${values.join(' / ')}';
 }

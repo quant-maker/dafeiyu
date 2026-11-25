@@ -1,3 +1,4 @@
+import 'package:feiyu/memory/db.dart';
 import 'package:feiyu/memory/store.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -19,8 +20,8 @@ MemoryHealth _health({
     localOnly: 0,
     oldestAt: oldestAt,
     newestAt: newestAt,
-    conflicts: const <String>[],
-    staleStars: const <String>[],
+    conflicts: const <FactConflict>[],
+    staleStars: const <Entity>[],
     generatedAt: 0,
   );
 }

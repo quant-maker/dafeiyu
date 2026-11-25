@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../ui/tokens.dart';
+import 'db.dart';
 import 'store.dart';
 
 /// 记忆体检：一眼看出她还记得多少、有没有说法打架、哪些星快灭了。
@@ -17,6 +18,7 @@ class _MemoryHealthPageState extends State<MemoryHealthPage> {
   MemoryHealth? _health;
   String? _error;
   bool _loading = true;
+  bool _busy = false;
 
   @override
   void initState() {
@@ -41,6 +43,57 @@ class _MemoryHealthPageState extends State<MemoryHealthPage> {
         _loading = false;
       });
     }
+  }
+
+  /// 选一条为准：其余说法打上失效时间，只改不删。
+  Future<void> _resolve(FactConflict c, int keepId) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await widget.store.keepFact(keepId, c.facts.map((f) => f.id));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    await _load();
+  }
+
+  Future<void> _keepStar(Entity s) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await widget.store.keepEntity(s.id);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    await _load();
+  }
+
+  Future<void> _forgetStar(Entity s) async {
+    if (_busy) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ref) => AlertDialog(
+        backgroundColor: AppPalette.ink,
+        title: Text('忘掉「${s.name}」？'),
+        content: const Text('这颗星和它的连线会从图上摘掉，聊过的记录还留着。'),
+        actions: <Widget>[
+          TextButton(onPressed: () => Navigator.of(ref).pop(false), child: const Text('再想想')),
+          TextButton(
+            onPressed: () => Navigator.of(ref).pop(true),
+            style: TextButton.styleFrom(foregroundColor: AppPalette.danger),
+            child: const Text('忘掉'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      await widget.store.forgetEntity(s.id);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    await _load();
   }
 
   @override
@@ -128,15 +181,41 @@ class _MemoryHealthPageState extends State<MemoryHealthPage> {
                             children: <Widget>[
                               for (final c in h.conflicts)
                                 Padding(
-                                  padding: const EdgeInsets.only(bottom: 6),
-                                  child: Text(
-                                    '· $c',
-                                    style: AppType.bodySmall.copyWith(color: AppPalette.accent, height: 1.5),
+                                  padding: const EdgeInsets.only(bottom: 10),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: <Widget>[
+                                      Text(
+                                        c.label,
+                                        style: AppType.bodySmall.copyWith(color: AppPalette.text2),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      for (final f in c.facts)
+                                        Row(
+                                          children: <Widget>[
+                                            Expanded(
+                                              child: Text(
+                                                '· ${(f.object ?? '').trim()}',
+                                                style: AppType.bodySmall.copyWith(color: AppPalette.accent, height: 1.5),
+                                              ),
+                                            ),
+                                            TextButton(
+                                              key: ValueKey<String>('health-keep-fact-${f.id}'),
+                                              style: TextButton.styleFrom(
+                                                minimumSize: const Size(0, 30),
+                                                padding: const EdgeInsets.symmetric(horizontal: 8),
+                                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                              ),
+                                              onPressed: _busy ? null : () => _resolve(c, f.id),
+                                              child: const Text('以这条为准', style: TextStyle(fontSize: 12)),
+                                            ),
+                                          ],
+                                        ),
+                                    ],
                                   ),
                                 ),
-                              const SizedBox(height: 2),
                               Text(
-                                '这些是她自己记岔了，可以在「记忆」里改掉。',
+                                '选一条为准，其余说法会被标成失效（不删，只是不再用）。',
                                 style: AppType.caption.copyWith(color: AppPalette.text3),
                               ),
                             ],
@@ -149,13 +228,43 @@ class _MemoryHealthPageState extends State<MemoryHealthPage> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: <Widget>[
+                              for (final s in h.staleStars)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 6),
+                                  child: Row(
+                                    children: <Widget>[
+                                      Expanded(
+                                        child: Text(
+                                          s.name,
+                                          style: AppType.body.copyWith(color: AppPalette.text1),
+                                        ),
+                                      ),
+                                      TextButton(
+                                        key: ValueKey<String>('health-keep-star-${s.id}'),
+                                        style: TextButton.styleFrom(
+                                          minimumSize: const Size(0, 30),
+                                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                        ),
+                                        onPressed: _busy ? null : () => _keepStar(s),
+                                        child: const Text('还想记得', style: TextStyle(fontSize: 12)),
+                                      ),
+                                      TextButton(
+                                        key: ValueKey<String>('health-drop-star-${s.id}'),
+                                        style: TextButton.styleFrom(
+                                          minimumSize: const Size(0, 30),
+                                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                          foregroundColor: AppPalette.danger,
+                                        ),
+                                        onPressed: _busy ? null : () => _forgetStar(s),
+                                        child: const Text('忘掉', style: TextStyle(fontSize: 12)),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               Text(
-                                h.staleStars.join('、'),
-                                style: AppType.body.copyWith(color: AppPalette.text1, height: 1.5),
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                '一个多月没提到、也快淡没了。再聊起来就会重新亮。',
+                                '一个多月没提到、也快淡没了。点「还想记得」会重新点亮，点「忘掉」就把它从图上摘掉。',
                                 style: AppType.caption.copyWith(color: AppPalette.text3),
                               ),
                             ],

@@ -61,6 +61,8 @@ dev_dependencies:
   flutter_lints: ^5.0.0
   drift_dev: ^2.31.0
   build_runner: ^2.15.1
+  # 测试里直接打开系统 sqlite 用（drift 的传递依赖，这里显式声明）。
+  sqlite3: ^2.9.4
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
