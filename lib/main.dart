@@ -26,6 +26,7 @@ import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'memory/curator.dart';
 import 'memory/db.dart' show Fact;
+import 'memory/galaxy_page.dart';
 import 'memory/store.dart';
 import 'ui/attachments.dart';
 import 'ui/avatar_mark.dart';
@@ -757,6 +758,35 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     });
   }
 
+  /// 星图里点某颗星时的「让她讲这件」：用她自己的记忆讲，不许编。
+  Future<String> _tellAboutEntity(String name, List<String> related) async {
+    final s = _settings;
+    final store = _store;
+    if (s == null) throw StateError('还没设置好 API');
+    if (store == null) throw StateError('记忆库还没打开');
+    final hits = await store.search(keyword: name, k: 4, threshold: 0);
+    final dayCards = await store.blocksOfTier(1, limit: 2);
+    final ctx = <String>[
+      for (final e in hits)
+        '${_dayLabel(e.at)}：${e.body.length > 200 ? e.body.substring(0, 200) : e.body}',
+      for (final b in dayCards) '${b.topic}：${b.summary.length > 160 ? b.summary.substring(0, 160) : b.summary}',
+    ].join('\n');
+    final relatedText = related.isEmpty ? '' : '跟它连着的还有：${related.take(5).join('、')}。';
+    final prompt = '下面是你自己记得的片段：\n'
+        '$ctx\n\n'
+        '请用第一人称，跟主人讲你记得的「$name」——什么时候、什么事、当时你的感觉。'
+        '$relatedText'
+        '两到四句，像随口说的，不要罗列，不要编造没写过的事。如果片段里没有它，就老实说记不清了。';
+    final text = (await _plainChat(s, prompt, maxTokens: 260)).trim();
+    if (text.isEmpty) throw StateError('她刚才没说话');
+    return text;
+  }
+
+  String _dayLabel(int ms) {
+    final d = DateTime.fromMillisecondsSinceEpoch(ms);
+    return '${d.month}月${d.day}日';
+  }
+
   Future<void> _openSettings() async {
     final s = await Navigator.of(context).push<Settings>(
       MaterialPageRoute(
@@ -765,6 +795,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               Settings(baseUrl: defaultBaseUrl(), apiKey: '', model: kDefaultModel, persona: kPresetPersona),
           memory: _store,
           onMemoryChanged: _reloadMemory,
+          onTellAbout: _tellAboutEntity,
           onTryInitiative: _tryInitiativeNow,
           initialInitiativeStatus: _lastInitiativeStatus,
           initialNextCheck: _nextCheckLabel,
@@ -2719,6 +2750,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         debugPrint('[feiyu] extracted $added episodes');
         await _reloadMemory();
       }
+      final stars = await curator.extractGraph(turns, at: DateTime.now());
+      if (stars > 0) debugPrint('[feiyu] graph +$stars entities');
     } catch (e) {
       debugPrint('[feiyu] summarize FAILED: $e');
     }
@@ -3012,6 +3045,7 @@ class SettingsPage extends StatefulWidget {
   final Settings initial;
   final MemoryStore? memory;
   final Future<void> Function()? onMemoryChanged;
+  final GalaxyAsk? onTellAbout;
   final Future<String> Function()? onTryInitiative;
   final String? initialInitiativeStatus;
   final String? initialNextCheck;
@@ -3021,6 +3055,7 @@ class SettingsPage extends StatefulWidget {
     required this.initial,
     required this.memory,
     this.onMemoryChanged,
+    this.onTellAbout,
     this.onTryInitiative,
     this.initialInitiativeStatus,
     this.initialNextCheck,
@@ -3037,6 +3072,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _persona;
   late bool _memoryEnabled;
   List<Fact> _facts = const [];
+  int _stars = 0;
   late bool _proactiveEnabled;
   late bool _proactiveShareEnabled;
   late bool _sceneEnabled;
@@ -3373,11 +3409,27 @@ class _SettingsPageState extends State<SettingsPage> {
     if (store == null) return;
     try {
       final facts = await store.facts();
+      final stars = await store.entityCount();
       if (!mounted) return;
-      setState(() => _facts = facts);
+      setState(() {
+        _facts = facts;
+        _stars = stars;
+      });
     } catch (e) {
       debugPrint('[feiyu] load facts FAILED: $e');
     }
+  }
+
+  Future<void> _openGalaxy() async {
+    final store = widget.memory;
+    if (store == null) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => GalaxyPage(store: store, ask: widget.onTellAbout),
+      ),
+    );
+    if (!mounted) return;
+    await _loadFacts();
   }
 
   Future<String?> _promptFact({String initial = ''}) async {
@@ -3868,6 +3920,34 @@ class _SettingsPageState extends State<SettingsPage> {
                 subtitle: '每几轮抽取关于你的长期事实，存在本机',
                 value: _memoryEnabled,
                 onChanged: (v) => setState(() => _memoryEnabled = v),
+              ),
+              const SizedBox(height: 6),
+              InkWell(
+                key: const ValueKey('settings-open-galaxy'),
+                borderRadius: BorderRadius.circular(AppRadii.m),
+                onTap: widget.memory == null ? null : _openGalaxy,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Row(
+                    children: <Widget>[
+                      const Icon(Icons.auto_awesome_outlined, size: 18, color: AppPalette.primary),
+                      const SizedBox(width: AppSpacing.s),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Text('记忆星图', style: AppType.body.copyWith(color: AppPalette.text1)),
+                            Text(
+                              _stars == 0 ? '还没有星，聊聊就有了' : '$_stars 颗星，点开可以让她讲',
+                              style: AppType.caption.copyWith(color: AppPalette.text3),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(Icons.chevron_right, size: 18, color: AppPalette.text4),
+                    ],
+                  ),
+                ),
               ),
               const SizedBox(height: 14),
               Text('现在记得 ${_facts.length} 条', style: AppType.caption.copyWith(color: AppPalette.text2)),

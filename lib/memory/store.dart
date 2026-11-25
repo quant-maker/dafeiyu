@@ -377,6 +377,141 @@ class MemoryStore {
     return '我自己的记忆（自然使用，别照念）：\n${buf.toString().trim()}';
   }
 
+  // ---------------------------------------------------------------- 星与边
+
+  Future<List<Entity>> entities({int limit = 800}) {
+    final q = db.select(db.entities)
+      ..orderBy([(e) => dr.OrderingTerm(expression: e.lastTouched, mode: dr.OrderingMode.desc)])
+      ..limit(limit);
+    return q.get();
+  }
+
+  Future<Entity?> entityById(int id) =>
+      (db.select(db.entities)..where((e) => e.id.equals(id))).getSingleOrNull();
+
+  /// 建星或强化已有的星。返回实体 id。
+  Future<int> upsertEntity({
+    required String name,
+    String kind = 'thing',
+    int importance = 3,
+    DateTime? at,
+    String? summary,
+  }) async {
+    final n = name.trim();
+    if (n.isEmpty) return 0;
+    final when = (at ?? DateTime.now()).millisecondsSinceEpoch;
+    final hit = await (db.select(db.entities)
+          ..where((e) => e.name.equals(n))
+          ..limit(1))
+        .getSingleOrNull();
+    if (hit == null) {
+      return db.into(db.entities).insert(
+            EntitiesCompanion.insert(
+              name: n,
+              kind: dr.Value(kind),
+              importance: dr.Value(importance),
+              firstSeen: when,
+              lastTouched: when,
+              summary: dr.Value(summary),
+            ),
+          );
+    }
+    await (db.update(db.entities)..where((e) => e.id.equals(hit.id))).write(
+      EntitiesCompanion(
+        kind: dr.Value(hit.kind == 'thing' ? kind : hit.kind),
+        importance: dr.Value(importance > hit.importance ? importance : hit.importance),
+        lastTouched: dr.Value(when),
+        strength: dr.Value(reinforce(hit.strength)),
+        summary: dr.Value(summary ?? hit.summary),
+      ),
+    );
+    return hit.id;
+  }
+
+  /// 手动点亮一颗星（被聊到、被点开）。
+  Future<void> touchEntity(int id, {DateTime? at}) async {
+    final e = await entityById(id);
+    if (e == null) return;
+    await (db.update(db.entities)..where((t) => t.id.equals(id))).write(
+      EntitiesCompanion(
+        strength: dr.Value(reinforce(e.strength)),
+        lastTouched: dr.Value((at ?? DateTime.now()).millisecondsSinceEpoch),
+      ),
+    );
+  }
+
+  Future<List<Edge>> edges({bool activeOnly = true, int limit = 3000}) {
+    final q = db.select(db.edges);
+    if (activeOnly) q.where((e) => e.invalidatedAt.isNull());
+    q.orderBy([(e) => dr.OrderingTerm(expression: e.lastSeen, mode: dr.OrderingMode.desc)]);
+    q.limit(limit);
+    return q.get();
+  }
+
+  /// 连线。同一对星、同一种关系只留一条，重复出现就把权重压上去。
+  Future<int> upsertEdge({
+    required int src,
+    required int dst,
+    String kind = 'mentions',
+    String? label,
+    DateTime? at,
+    int? evidenceEpisode,
+  }) async {
+    if (src == 0 || dst == 0 || src == dst) return 0;
+    final when = (at ?? DateTime.now()).millisecondsSinceEpoch;
+    final hit = await (db.select(db.edges)
+          ..where((e) => e.src.equals(src) & e.dst.equals(dst) & e.kind.equals(kind) & e.invalidatedAt.isNull())
+          ..limit(1))
+        .getSingleOrNull();
+    if (hit == null) {
+      return db.into(db.edges).insert(
+            EdgesCompanion.insert(
+              src: src,
+              dst: dst,
+              kind: dr.Value(kind),
+              label: dr.Value(label),
+              firstSeen: when,
+              lastSeen: when,
+              evidenceEpisode: dr.Value(evidenceEpisode),
+            ),
+          );
+    }
+    await (db.update(db.edges)..where((e) => e.id.equals(hit.id))).write(
+      EdgesCompanion(
+        lastSeen: dr.Value(when),
+        weight: dr.Value((hit.weight + 0.2).clamp(0.2, 5.0)),
+        label: dr.Value(label ?? hit.label),
+        evidenceEpisode: dr.Value(evidenceEpisode ?? hit.evidenceEpisode),
+      ),
+    );
+    return hit.id;
+  }
+
+  /// 关系不成立了：不删，只打上失效时间（双时间，能回看）。
+  Future<void> invalidateEdge(int id, {DateTime? at}) async {
+    await (db.update(db.edges)..where((e) => e.id.equals(id))).write(
+      EdgesCompanion(invalidatedAt: dr.Value((at ?? DateTime.now()).millisecondsSinceEpoch)),
+    );
+  }
+
+  Future<void> invalidateFact(int id, {DateTime? at}) async {
+    await (db.update(db.facts)..where((f) => f.id.equals(id))).write(
+      FactsCompanion(invalidatedAt: dr.Value((at ?? DateTime.now()).millisecondsSinceEpoch)),
+    );
+  }
+
+  Future<int> entityCount() async {
+    final c = db.entities.id.count();
+    final row = await (db.selectOnly(db.entities)..addColumns([c])).getSingle();
+    return row.read(c) ?? 0;
+  }
+
+  Future<int> edgeCount() async {
+    final c = db.edges.id.count();
+    final row = await (db.selectOnly(db.edges)..addColumns([c])).getSingle();
+    return row.read(c) ?? 0;
+  }
+
   // ---------------------------------------------------------------- 旧数据
 
   /// 把 SharedPreferences 里的 24 条事实与 JSON 档案导入数据库，只做一次。
@@ -432,5 +567,7 @@ class MemoryStore {
         'facts': await factCount(),
         'episodes': await episodeCount(),
         'blocks': await blockCount(),
+        'entities': await entityCount(),
+        'edges': await edgeCount(),
       };
 }

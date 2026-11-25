@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'db.dart' show Block, Episode;
 import 'digest.dart';
+import 'graph.dart';
 import 'store.dart';
 import 'timeline.dart';
 
@@ -112,6 +113,59 @@ class MemoryCurator {
       if (ok > 0) added++;
     }
     return added;
+  }
+
+  // -------------------------------------------------------------- 星图抽取
+
+  /// 抽出实体与关系，落到星图上。返回新建/强化的实体数。
+  Future<int> extractGraph(
+    List<TranscriptTurn> turns, {
+    DateTime? at,
+    int? episodeId,
+    int maxEntities = 8,
+  }) async {
+    final fn = chat;
+    if (fn == null) return 0;
+    final transcript = turns
+        .map((t) => TranscriptTurn(fromUser: t.fromUser, text: t.text.trim()))
+        .where((t) => t.text.isNotEmpty)
+        .map((t) => t.render())
+        .join('\n');
+    if (transcript.length < 30) return 0;
+
+    GraphDraft draft;
+    try {
+      draft = parseGraph(await fn(graphExtractionPrompt(transcript)));
+    } catch (_) {
+      return 0;
+    }
+    if (draft.isEmpty) return 0;
+
+    final when = at ?? DateTime.now();
+    final ids = <String, int>{};
+    for (final e in draft.entities.take(maxEntities)) {
+      final id = await store.upsertEntity(
+        name: e.name,
+        kind: e.kind.value,
+        importance: e.importance,
+        at: when,
+      );
+      if (id > 0) ids[e.name] = id;
+    }
+    for (final edge in draft.edges) {
+      final s = ids[edge.src];
+      final d = ids[edge.dst];
+      if (s == null || d == null) continue;
+      await store.upsertEdge(
+        src: s,
+        dst: d,
+        kind: edge.kind,
+        label: edge.label,
+        at: when,
+        evidenceEpisode: episodeId,
+      );
+    }
+    return ids.length;
   }
 
   // -------------------------------------------------------------- 分层维护
