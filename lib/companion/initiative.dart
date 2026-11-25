@@ -82,6 +82,30 @@ const Duration reopenGap = Duration(minutes: 40);
 /// Silence for this long (with no proactive message) is worth a check.
 const Duration longSilenceGap = Duration(hours: 6);
 
+/// The floor between two proactive messages, whatever the trigger and whatever
+/// the veto gate says.
+///
+/// This is the backstop that makes a burst physically impossible: a pile of
+/// timers firing together, or a gate that answers "yes" to everything, still
+/// yields at most one message per gap.
+const Duration minProactiveGap = Duration(minutes: 45);
+
+/// How many messages may go out in a day while the veto gate is unavailable
+/// (timeout, network error, junk reply).
+///
+/// Kept separately from the normal daily cap so a flaky gateway degrades into
+/// "slightly more talkative" instead of "will not stop talking".
+const int maxUnsurePerDay = 2;
+
+/// True when enough time has passed since the last proactive message.
+///
+/// A null [lastAt] means she has not spoken yet, which always allows.
+bool gapAllowsSpeak(DateTime? lastAt, DateTime now) =>
+    lastAt == null || now.difference(lastAt) >= minProactiveGap;
+
+/// True when a message the gate could not judge may still be sent.
+bool unsureAllowsSpeak(int unsureToday) => unsureToday < maxUnsurePerDay;
+
 /// True between 00:00 and 07:30 local time.
 bool inQuietHours(DateTime now) =>
     now.hour < 7 || (now.hour == 7 && now.minute < 30);

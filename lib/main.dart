@@ -603,8 +603,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   int _opportunitiesToday = 0;
   int _ignoredStreak = 0;
 
-  /// Persisted mirror of the three counters above, so a relaunch does not hand
-  /// her a fresh daily allowance.
+  /// How many messages went out on a *failed* veto today. Separate from
+  /// [_proactiveToday] because "speak when the gate is unsure" needs its own,
+  /// much tighter ceiling.
+  int _unsureToday = 0;
+
+  /// Persisted mirror of the counters above, so a relaunch does not hand her a
+  /// fresh daily allowance.
   InitiativeBudget? _budget;
   bool _dayAnchorDone = false;
   bool _longSilenceDone = false;
@@ -636,9 +641,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         _proactiveToday = b.sent;
         _opportunitiesToday = b.opportunities;
         _ignoredStreak = b.ignoredStreak;
+        _unsureToday = b.unsure;
+        _lastProactiveAt ??= b.lastAt;
         debugPrint(
           '[feiyu] budget restored sent=${b.sent} '
-          'opp=${b.opportunities} ignored=${b.ignoredStreak}',
+          'opp=${b.opportunities} ignored=${b.ignoredStreak} '
+          'unsure=${b.unsure}',
         );
       }
     }).catchError((Object e) {
@@ -2007,6 +2015,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _opportunitiesToday = 0;
     _proactiveToday = 0;
     _ignoredStreak = 0;
+    _unsureToday = 0;
     _dayAnchorDone = false;
     _longSilenceDone = false;
     _afterthoughtUsedForTurn = false;
@@ -2025,7 +2034,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       ..day = _day ?? budget.day
       ..sent = _proactiveToday
       ..opportunities = _opportunitiesToday
-      ..ignoredStreak = _ignoredStreak;
+      ..ignoredStreak = _ignoredStreak
+      ..unsure = _unsureToday
+      ..lastAt = _lastProactiveAt;
     unawaited(budget.save());
   }
 
@@ -2170,6 +2181,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (inQuietHours(now)) return;
     if (_proactiveToday >= 3 || _ignoredStreak >= 3) return;
     if (_opportunitiesToday >= 6) return;
+    // The safety net that holds even when the veto says "go ahead": two
+    // proactive messages can never be closer than [minProactiveGap], so a
+    // stack of timers firing together still produces at most one message.
+    if (!gapAllowsSpeak(_lastProactiveAt, now)) return;
     if (trigger == InitiativeTrigger.dayAnchor) _dayAnchorDone = true;
     if (trigger == InitiativeTrigger.longSilence) _longSilenceDone = true;
 
@@ -2191,9 +2206,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     // it can prefer a share; otherwise it just chats. Automatic opportunities
     // always pass through the (speak-biased) veto gate.
     InitiativeMode mode;
+    bool unsure = false;
     if (trigger == InitiativeTrigger.manual) {
       if (_inbox.unsharedCount > 0) {
         final veto = await _veto(trigger, reason);
+        unsure = veto == null;
         mode = veto == InitiativeMode.share
             ? InitiativeMode.share
             : InitiativeMode.chat;
@@ -2201,7 +2218,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         mode = InitiativeMode.chat;
       }
     } else {
-      mode = await _veto(trigger, reason);
+      final veto = await _veto(trigger, reason);
+      unsure = veto == null;
+      mode = veto ?? InitiativeMode.chat;
+    }
+    // When the gate could not answer we still prefer speaking, but only a
+    // couple of times a day: a broken provider must not become a chatty one.
+    if (unsure && !unsureAllowsSpeak(_unsureToday)) {
+      return '$stamp · 网关没给出判断，今天兜底次数用完了';
     }
     if (mode == InitiativeMode.silent) {
       return '$stamp · 她决定先不说话（SILENT）';
@@ -2214,6 +2238,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       mode = InitiativeMode.chat;
     }
     final outcome = await _speakUp(trigger, mode);
+    if (unsure &&
+        (outcome == 'sent-chat' || outcome == 'sent-share')) {
+      _unsureToday++;
+      _persistBudget();
+    }
     return _initiativeStatusFrom(stamp, outcome, trigger);
   }
 
@@ -2275,9 +2304,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   /// Asks the model whether this opportunity is worth a message, and how.
   ///
-  /// The reply must name exactly one mode. Anything else — empty, timeout,
-  /// error, unrecognised — stays silent.
-  Future<InitiativeMode> _veto(
+  /// Returns `null` when the gate could not answer at all (timeout, network,
+  /// junk reply). Callers treat that as "unknown" and may still speak, inside
+  /// a much tighter budget. A reply that names no mode is a decision to stay
+  /// silent, not a failure.
+  Future<InitiativeMode?> _veto(
     InitiativeTrigger trigger, [
     String reason = '',
   ]) async {
@@ -2315,10 +2346,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     } catch (e) {
       // The gate is speak-biased on purpose ("能说话就说"). If we cannot get an
       // opinion at all (timeout / provider hiccup), fall through to chatting
-      // instead of silently doing nothing. Daily caps still prevent any
-      // runaway, and a truly broken provider will surface as "失败：..." later.
+      // instead of silently doing nothing. That is safe only because of the
+      // independent ceilings: [_maxUnsurePerDay] for exactly this case,
+      // [_minProactiveGap] between any two messages, and the daily caps.
       debugPrint('[feiyu] veto ${trigger.name} failed, defaulting to chat: $e');
-      return InitiativeMode.chat;
+      return null;
     }
   }
 

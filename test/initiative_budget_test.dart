@@ -45,6 +45,8 @@ void main() {
       sent: 2,
       opportunities: 5,
       ignoredStreak: 1,
+      unsure: 1,
+      lastAt: DateTime(2026, 11, 24, 21, 5),
     );
     final InitiativeBudget again = InitiativeBudget.fromJson(
       b.toJson(),
@@ -54,5 +56,38 @@ void main() {
     expect(again.sent, 2);
     expect(again.opportunities, 5);
     expect(again.ignoredStreak, 1);
+    expect(again.unsure, 1);
+    expect(again.lastAt, DateTime(2026, 11, 24, 21, 5));
+  });
+
+  test('the last-spoken time survives a restart but not a new day', () {
+    final InitiativeBudget b = InitiativeBudget(
+      day: DateTime(2026, 11, 24),
+      sent: 1,
+      unsure: 2,
+      lastAt: DateTime(2026, 11, 24, 23, 50),
+    );
+    final InitiativeBudget sameDay = InitiativeBudget.fromJson(
+      b.toJson(),
+      DateTime(2026, 11, 24, 23, 55),
+    );
+    expect(sameDay.rollTo(DateTime(2026, 11, 24, 23, 55)), isFalse);
+    expect(sameDay.lastAt, b.lastAt, reason: 'the gap must still apply');
+
+    final InitiativeBudget nextDay = InitiativeBudget.fromJson(
+      b.toJson(),
+      DateTime(2026, 11, 25, 0, 5),
+    );
+    expect(nextDay.rollTo(DateTime(2026, 11, 25, 0, 5)), isTrue);
+    expect(nextDay.unsure, 0);
+  });
+
+  test('a missing lastAt stays null instead of becoming now', () {
+    final InitiativeBudget b = InitiativeBudget.fromJson(
+      <String, dynamic>{'sent': 1},
+      DateTime(2026, 11, 24, 8),
+    );
+    expect(b.lastAt, isNull);
+    expect(b.unsure, 0);
   });
 }

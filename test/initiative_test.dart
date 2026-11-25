@@ -293,4 +293,36 @@ void main() {
       expect(parseVetoReply('我想说一句，SPEAK:CHAT'), InitiativeMode.chat);
     });
   });
+
+  group('speech backstops', () {
+    final DateTime now = DateTime(2026, 11, 25, 14);
+
+    test('a first message of the day is always allowed by the gap', () {
+      expect(gapAllowsSpeak(null, now), isTrue);
+    });
+
+    test('two messages inside the gap are not allowed', () {
+      expect(gapAllowsSpeak(now.subtract(const Duration(minutes: 44)), now),
+          isFalse);
+      expect(gapAllowsSpeak(now.subtract(const Duration(minutes: 45)), now),
+          isTrue);
+      expect(gapAllowsSpeak(now.subtract(const Duration(hours: 3)), now),
+          isTrue);
+    });
+
+    test('a future timestamp (clock change) still blocks briefly', () {
+      expect(
+        gapAllowsSpeak(now.add(const Duration(minutes: 10)), now),
+        isFalse,
+      );
+    });
+
+    test('the unsure allowance is two a day', () {
+      expect(unsureAllowsSpeak(0), isTrue);
+      expect(unsureAllowsSpeak(1), isTrue);
+      expect(unsureAllowsSpeak(2), isFalse);
+      expect(unsureAllowsSpeak(9), isFalse);
+      expect(maxUnsurePerDay, 2);
+    });
+  });
 }

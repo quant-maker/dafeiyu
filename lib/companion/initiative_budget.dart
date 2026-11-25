@@ -15,6 +15,8 @@ class InitiativeBudget {
     this.sent = 0,
     this.opportunities = 0,
     this.ignoredStreak = 0,
+    this.unsure = 0,
+    this.lastAt,
   });
 
   /// Local midnight of the day these counters belong to.
@@ -22,6 +24,15 @@ class InitiativeBudget {
   int sent;
   int opportunities;
   int ignoredStreak;
+
+  /// Messages she sent without a working veto (the gate timed out or the
+  /// provider answered with junk). Capped separately from [sent] so a flaky
+  /// gateway cannot turn "speak when unsure" into a stream of messages.
+  int unsure;
+
+  /// When she last said something, kept across restarts so the minimum gap
+  /// between two proactive messages survives a relaunch.
+  DateTime? lastAt;
 
   static const String key = 'feiyu.budget.v1';
 
@@ -35,6 +46,7 @@ class InitiativeBudget {
     sent = 0;
     opportunities = 0;
     ignoredStreak = 0;
+    unsure = 0;
     return true;
   }
 
@@ -43,6 +55,8 @@ class InitiativeBudget {
     'sent': sent,
     'opportunities': opportunities,
     'ignoredStreak': ignoredStreak,
+    'unsure': unsure,
+    if (lastAt != null) 'lastAt': lastAt!.toIso8601String(),
   };
 
   static InitiativeBudget _fresh(DateTime now) =>
@@ -65,11 +79,14 @@ class InitiativeBudget {
     final dynamic rawDay = j['day'];
     final DateTime? day =
         rawDay is String ? DateTime.tryParse(rawDay) : null;
+    final dynamic rawLast = j['lastAt'];
     return InitiativeBudget(
       day: day == null ? _midnight(now) : _midnight(day),
       sent: _count(j['sent']),
       opportunities: _count(j['opportunities']),
       ignoredStreak: _count(j['ignoredStreak']),
+      unsure: _count(j['unsure']),
+      lastAt: rawLast is String ? DateTime.tryParse(rawLast) : null,
     );
   }
 
