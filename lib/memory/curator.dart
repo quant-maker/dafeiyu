@@ -1,0 +1,303 @@
+import 'dart:convert';
+
+import 'db.dart' show Block, Episode;
+import 'digest.dart';
+import 'store.dart';
+import 'timeline.dart';
+
+/// 调模型的入口。注入成函数，为了方便测试与换源。
+typedef MemoryChat = Future<String> Function(String prompt);
+
+/// 算向量的入口。拿不到向量时传 null，记忆照样落库（只是检索退化为关键词）。
+typedef MemoryEmbed = Future<List<double>> Function(String text);
+
+/// 一段对话里的转折点。
+class TranscriptTurn {
+  final bool fromUser;
+  final String text;
+
+  const TranscriptTurn({required this.fromUser, required this.text});
+
+  String render() => '${fromUser ? '主人' : '我'}：$text';
+}
+
+/// 一次维护做了什么。
+class MaintenanceReport {
+  int dayCards = 0;
+  int weekCards = 0;
+  int monthCards = 0;
+  bool truncated = false;
+  String? error;
+
+  bool get didSomething => dayCards + weekCards + monthCards > 0;
+
+  @override
+  String toString() =>
+      'Maintenance(day+$dayCards, week+$weekCards, month+$monthCards'
+      '${truncated ? ', truncated' : ''}${error == null ? '' : ', error: $error'})';
+}
+
+/// 记忆的「管家」：把对话熬成情景，把情景熬成日结，再熬成周结月结。
+///
+/// 对应 docs/memory-design.md 的 P1。原则是只向上折一层、谱系永活：
+/// 每个块的 directIds 指向下一层，effectiveIds 覆盖到全部原始情景。
+class MemoryCurator {
+  final MemoryStore store;
+  final MemoryChat? chat;
+  final MemoryEmbed? embed;
+
+  /// 一次维护最多熬几篇日结，避免首次运行把模型额度打光。
+  final int maxDayCardsPerRun;
+
+  MemoryCurator({
+    required this.store,
+    this.chat,
+    this.embed,
+    this.maxDayCardsPerRun = 3,
+  });
+
+  // -------------------------------------------------------------- 情景抽取
+
+  /// 把一段对话抽成 0–[maxPerChunk] 条情景，返回新增条数。
+  Future<int> extractEpisodes(
+    List<TranscriptTurn> turns, {
+    DateTime? at,
+    int maxPerChunk = 3,
+    int importanceFallback = 3,
+  }) async {
+    final fn = chat;
+    if (fn == null) return 0;
+    final clean = turns
+        .map((t) => TranscriptTurn(fromUser: t.fromUser, text: t.text.trim()))
+        .where((t) => t.text.isNotEmpty)
+        .toList();
+    if (clean.isEmpty) return 0;
+    final transcript = clean.map((t) => t.render()).join('\n');
+    if (transcript.length < 40) return 0;
+
+    final when = at ?? DateTime.now();
+    List<EpisodeDraft> drafts;
+    try {
+      final raw = await fn(episodeExtractionPrompt(transcript));
+      drafts = parseEpisodeDrafts(raw);
+    } catch (_) {
+      return 0;
+    }
+    if (drafts.isEmpty) return 0;
+
+    final from = dayStartMs(when);
+    final to = from + const Duration(days: 1).inMilliseconds;
+    var added = 0;
+    for (final d in drafts.take(maxPerChunk)) {
+      final body = d.body.trim();
+      if (body.isEmpty) continue;
+      if (await store.hasSimilarEpisode(body, fromMs: from, toMs: to)) continue;
+      List<double>? vec;
+      final ef = embed;
+      if (ef != null) {
+        try {
+          final v = await ef(body);
+          if (v.isNotEmpty) vec = v;
+        } catch (_) {
+          // 向量失败不影响落库。
+        }
+      }
+      final ok = await store.addEpisode(
+        at: when,
+        title: d.title,
+        body: body,
+        vector: vec,
+        importance: d.importance == 3 ? importanceFallback : d.importance,
+      );
+      if (ok > 0) added++;
+    }
+    return added;
+  }
+
+  // -------------------------------------------------------------- 分层维护
+
+  /// 结账：把走完的那天/周/月折上去。可以反复调用，已折过的不会重复。
+  Future<MaintenanceReport> runMaintenance({DateTime? now}) async {
+    final report = MaintenanceReport();
+    final fn = chat;
+    if (fn == null) return report;
+    final t = now ?? DateTime.now();
+
+    try {
+      final continued = await _foldDays(fn, t, report);
+      if (continued) {
+        await _foldWeeks(fn, t, report);
+        await _foldMonths(fn, t, report);
+      }
+    } catch (e) {
+      report.error = e.toString();
+    }
+    return report;
+  }
+
+  /// 返回是否还能继续往上折（同一轮里刚熬出的日结不参与周结，避免半成品）。
+  Future<bool> _foldDays(MemoryChat fn, DateTime now, MaintenanceReport report) async {
+    final all = await store.episodes(limit: 5000);
+    if (all.isEmpty) return true;
+    final byDay = <String, List<Episode>>{};
+    for (final e in all) {
+      byDay.putIfAbsent(dayKey(DateTime.fromMillisecondsSinceEpoch(e.at)), () => []).add(e);
+    }
+    final done = await store.blockTopics(1);
+    final days = byDay.keys.toList()..sort();
+    var made = 0;
+    for (final key in days) {
+      if (made >= maxDayCardsPerRun) {
+        report.truncated = true;
+        break;
+      }
+      if (done.contains('day:$key')) continue;
+      final day = parseDayKey(key);
+      if (day == null || !isDayComplete(day, now)) continue;
+      final eps = byDay[key]!;
+      final bodies = eps.map((e) => e.body).toList();
+      final summary = cleanModelText(await fn(dayCardPrompt(dayLabel: dayLabel(key), episodes: bodies)));
+      if (summary.isEmpty) continue;
+      final ids = eps.map((e) => e.id).toList();
+      await store.putBlock(
+        tier: 1,
+        topic: 'day:$key',
+        summary: summary,
+        directIds: ids,
+        effectiveIds: ids,
+        spanFrom: eps.first.at,
+        spanTo: eps.last.at,
+      );
+      made++;
+      report.dayCards++;
+    }
+    return true;
+  }
+
+  Future<void> _foldWeeks(MemoryChat fn, DateTime now, MaintenanceReport report) async {
+    final dayBlocks = await store.blocksOfTier(1, limit: 1000);
+    if (dayBlocks.isEmpty) return;
+    final groups = <String, List<Block>>{};
+    for (final b in dayBlocks) {
+      final key = b.topic?.replaceFirst('day:', '') ?? '';
+      final day = parseDayKey(key);
+      if (day == null) continue;
+      groups.putIfAbsent(weekKey(day), () => []).add(b);
+    }
+    final done = await store.blockTopics(2);
+    var made = 0;
+    for (final entry in groups.entries) {
+      if (made >= 2) break;
+      final key = entry.key;
+      if (done.contains('week:$key')) continue;
+      final blocks = entry.value;
+      final firstDay = _firstSpan(blocks);
+      if (firstDay == null) continue;
+      if (blocks.length < 5 && !isWeekComplete(firstDay, now)) continue;
+      final cards = _orderedSummaries(blocks);
+      final summary = cleanModelText(await fn(rollupPrompt(label: weekLabel(key), level: '周', cards: cards)));
+      if (summary.isEmpty) continue;
+      await store.putBlock(
+        tier: 2,
+        topic: 'week:$key',
+        summary: summary,
+        directIds: blocks.map((b) => b.id).toList(),
+        effectiveIds: _mergeIds(blocks),
+        spanFrom: _minSpan(blocks, (b) => b.spanFrom),
+        spanTo: _maxSpan(blocks, (b) => b.spanTo),
+      );
+      made++;
+      report.weekCards++;
+    }
+  }
+
+  Future<void> _foldMonths(MemoryChat fn, DateTime now, MaintenanceReport report) async {
+    final weekBlocks = await store.blocksOfTier(2, limit: 500);
+    if (weekBlocks.isEmpty) return;
+    final groups = <String, List<Block>>{};
+    for (final b in weekBlocks) {
+      final key = (b.topic ?? '').replaceFirst('week:', '');
+      final day = _firstSpan([b]);
+      final month = day == null ? key.substring(0, key.length.clamp(0, 7)) : monthKey(day);
+      groups.putIfAbsent(month, () => []).add(b);
+    }
+    final done = await store.blockTopics(3);
+    for (final entry in groups.entries) {
+      final key = entry.key;
+      if (done.contains('month:$key')) continue;
+      final blocks = entry.value;
+      final firstDay = _firstSpan(blocks);
+      if (firstDay == null) continue;
+      if (blocks.length < 3 && !isMonthComplete(firstDay, now)) continue;
+      final cards = _orderedSummaries(blocks);
+      final summary = cleanModelText(await fn(rollupPrompt(label: monthLabel(key), level: '月', cards: cards)));
+      if (summary.isEmpty) continue;
+      await store.putBlock(
+        tier: 3,
+        topic: 'month:$key',
+        summary: summary,
+        directIds: blocks.map((b) => b.id).toList(),
+        effectiveIds: _mergeIds(blocks),
+        spanFrom: _minSpan(blocks, (b) => b.spanFrom),
+        spanTo: _maxSpan(blocks, (b) => b.spanTo),
+      );
+      report.monthCards++;
+    }
+  }
+
+  // -------------------------------------------------------------- 小工具
+
+  DateTime? _firstSpan(List<Block> blocks) {
+    for (final b in blocks) {
+      if (b.spanFrom != null) return DateTime.fromMillisecondsSinceEpoch(b.spanFrom!);
+    }
+    if (blocks.isEmpty) return null;
+    return DateTime.fromMillisecondsSinceEpoch(blocks.first.createdAt);
+  }
+
+  int? _minSpan(List<Block> blocks, int? Function(Block) pick) {
+    int? out;
+    for (final b in blocks) {
+      final v = pick(b);
+      if (v == null) continue;
+      if (out == null || v < out) out = v;
+    }
+    return out;
+  }
+
+  int? _maxSpan(List<Block> blocks, int? Function(Block) pick) {
+    int? out;
+    for (final b in blocks) {
+      final v = pick(b);
+      if (v == null) continue;
+      if (out == null || v > out) out = v;
+    }
+    return out;
+  }
+
+  List<String> _orderedSummaries(List<Block> blocks) {
+    final sorted = [...blocks]..sort((a, b) => (a.spanFrom ?? a.createdAt).compareTo(b.spanFrom ?? b.createdAt));
+    return sorted.map((b) => b.summary).toList();
+  }
+
+  List<int> _mergeIds(List<Block> blocks) {
+    final seen = <int>{};
+    final out = <int>[];
+    for (final b in blocks) {
+      for (final id in _parseIds(b.effectiveIds)) {
+        if (seen.add(id)) out.add(id);
+      }
+    }
+    return out;
+  }
+
+  static List<int> _parseIds(String json) {
+    try {
+      final data = jsonDecode(json);
+      if (data is! List) return const [];
+      return data.map((e) => (e as num).toInt()).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+}

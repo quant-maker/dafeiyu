@@ -24,6 +24,7 @@ import 'feeds/footprints.dart';
 import 'providers.dart';
 import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
+import 'memory/curator.dart';
 import 'memory/db.dart' show Fact;
 import 'memory/store.dart';
 import 'ui/attachments.dart';
@@ -533,6 +534,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   MemoryStore? _store;
   String _factsPrompt = '';
   String _digest = '';
+  String _timeline = '';
   int _summarized = 0;
   List<Footprint> _footprints = const [];
 
@@ -552,6 +554,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   SharedUrlStore _sharedUrls = SharedUrlStore.empty();
   FeedInbox _inbox = FeedInbox.empty();
   Timer? _heartbeatTimer;
+  Timer? _memoryTimer;
   bool _heartbeatFailed = false;
   Timer? _ignoredTimer;
   Timer? _pendingThreadTimer;
@@ -650,6 +653,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() => _store = store);
       unawaited(_reloadMemory());
+      unawaited(_runMemoryMaintenance());
+      _scheduleMemoryMaintenance();
     }).catchError((Object e) {
       debugPrint('[feiyu] memory open FAILED: $e');
     });
@@ -694,6 +699,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _longSilenceTimer?.cancel();
     _presenceTimer?.cancel();
     _heartbeatTimer?.cancel();
+    _memoryTimer?.cancel();
     _input.removeListener(_noteInteraction);
     _input.dispose();
     _scroll.removeListener(_onScroll);
@@ -1386,6 +1392,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           '如果对方问起以前聊过的事，先看记录和记忆；确实没有就直说没印象，不要编。',
       if (s.memoryEnabled) _factsPrompt,
       _digest,
+      if (s.memoryEnabled) _timeline,
       '你可以调用这些工具：'
           '① fetch_url 抓网页正文（查资料、看链接时用，别凭空猜网页内容）；'
           '② remember 把值得长期记住的事记下来（对方的偏好、约定、正在做的项目、重要经历），'
@@ -2612,71 +2619,106 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Embedder _embedder(Settings s) =>
       Embedder(baseUrl: s.baseUrl, apiKey: s.apiKey, model: s.embeddingModel);
 
-  /// 记忆落库后刷新常驻 prompt 片段（事实 + 今天的摘要）。
+  /// 记忆落库后刷新常驻 prompt 片段（事实 + 今天的摘要 + 日结）。
   Future<void> _reloadMemory() async {
     final store = _store;
     if (store == null) return;
     try {
       final prompt = await store.factsPrompt();
       final digest = await store.recentDigest();
+      final timeline = await store.timelinePrompt();
       if (!mounted) return;
       setState(() {
         _factsPrompt = prompt;
         _digest = digest;
+        _timeline = timeline;
       });
     } catch (e) {
       debugPrint('[feiyu] memory reload FAILED: $e');
     }
   }
 
-  /// Compress the backlog into one archive paragraph when it grows too long.
+  /// 记忆的管家：调模型 + 算向量，都走当前设置。
+  MemoryCurator? _curator(Settings? s) {
+    final store = _store;
+    if (store == null || s == null) return null;
+    return MemoryCurator(
+      store: store,
+      chat: (prompt) => _plainChat(s, prompt),
+      embed: (text) async => (await _embedder(s).embed(text)) ?? const <double>[],
+    );
+  }
+
+  /// 一次性、非流式的模型调用（抽记忆、结账、veto 都用它）。
+  Future<String> _plainChat(Settings s, String prompt, {int? maxTokens}) async {
+    final base = s.baseUrl.endsWith('/') ? s.baseUrl.substring(0, s.baseUrl.length - 1) : s.baseUrl;
+    final res = await http
+        .post(
+          Uri.parse('$base/chat/completions'),
+          headers: {'content-type': 'application/json', 'authorization': 'Bearer ${s.apiKey}'},
+          body: jsonEncode({
+            'model': s.model,
+            'stream': false,
+            if (maxTokens != null) 'max_tokens': maxTokens,
+            'messages': [
+              {'role': 'user', 'content': prompt},
+            ],
+          }),
+        )
+        .timeout(const Duration(seconds: 90));
+    if (res.statusCode != 200) {
+      throw StateError('memory chat HTTP ${res.statusCode}');
+    }
+    final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    final msg = ((j['choices'] as List).first as Map)['message'] as Map;
+    return (msg['content'] as String? ?? '').trim();
+  }
+
+  /// 结账：把走完的日子折成日结，再往上折周/月。启动后跑一次，之后每天 23:10 一次。
+  Future<void> _runMemoryMaintenance() async {
+    final c = _curator(_settings);
+    if (c == null) return;
+    try {
+      final report = await c.runMaintenance();
+      debugPrint('[feiyu] memory maintenance $report');
+      if (report.didSomething) await _reloadMemory();
+    } catch (e) {
+      debugPrint('[feiyu] memory maintenance FAILED: $e');
+    }
+  }
+
+  void _scheduleMemoryMaintenance() {
+    _memoryTimer?.cancel();
+    final now = DateTime.now();
+    var next = DateTime(now.year, now.month, now.day, 23, 10);
+    if (!next.isAfter(now)) next = next.add(const Duration(days: 1));
+    _memoryTimer = Timer(next.difference(now), () async {
+      await _runMemoryMaintenance();
+      _scheduleMemoryMaintenance();
+    });
+  }
+
+  /// Compress the backlog into episodes + a day card source when it grows too long.
   Future<void> _maybeSummarize(Settings s) async {
     final pending = _messages.length - _summarized;
     if (pending < 20) return;
     final slice = _messages.sublist(_summarized, _messages.length - 4);
     if (slice.isEmpty) return;
-    final transcript = slice
+    final turns = slice
         .where((m) => m.content.trim().isNotEmpty)
-        .map((m) => '${m.role == 'user' ? '主人' : '我'}：${m.content}')
-        .join('\n');
-    if (transcript.trim().isEmpty) return;
+        .map((m) => TranscriptTurn(fromUser: m.role == 'user', text: m.content))
+        .toList();
+    if (turns.isEmpty) return;
 
+    final curator = _curator(s);
+    if (curator == null) return;
     try {
-      final base = s.baseUrl.endsWith('/') ? s.baseUrl.substring(0, s.baseUrl.length - 1) : s.baseUrl;
-      final res = await http
-          .post(
-            Uri.parse('$base/chat/completions'),
-            headers: {'content-type': 'application/json', 'authorization': 'Bearer ${s.apiKey}'},
-            body: jsonEncode({
-              'model': s.model,
-              'stream': false,
-              'messages': [
-                {
-                  'role': 'system',
-                  'content': '把这段对话压缩成一段摘要，供以后检索。写清：聊了什么、结论或决定、'
-                      '对方透露的偏好或正在做的事、答应过的事。第三人称，客观，不超过 200 字。'
-                      '寒暄、重复、已经写进上面几点的废话都不要。'
-                },
-                {'role': 'user', 'content': transcript},
-              ],
-            }),
-          )
-          .timeout(const Duration(seconds: 60));
-      if (res.statusCode != 200) return;
-      final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
-      final summary = ((j['choices'] as List).first['message'] as Map)['content'] as String? ?? '';
-      if (summary.trim().isEmpty) return;
-
-      final vector = await _embedder(s).embed(summary) ?? const <double>[];
-      await _store?.addEpisode(
-        at: DateTime.now(),
-        body: summary.trim(),
-        vector: vector,
-        importance: 3,
-      );
+      final added = await curator.extractEpisodes(turns, at: DateTime.now());
       _summarized = _messages.length - 4;
-      debugPrint('[feiyu] archived ${summary.length} chars');
-      await _reloadMemory();
+      if (added > 0) {
+        debugPrint('[feiyu] extracted $added episodes');
+        await _reloadMemory();
+      }
     } catch (e) {
       debugPrint('[feiyu] summarize FAILED: $e');
     }

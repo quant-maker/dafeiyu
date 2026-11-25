@@ -6,8 +6,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'db.dart';
 import 'db_conn.dart';
 import 'scoring.dart';
+import 'timeline.dart';
 
 export 'scoring.dart' show quantizeVector, cosineInt8, cosine;
+
+/// 某天零点的毫秒时间戳。
+int dayStartMs(DateTime t) => DateTime(t.year, t.month, t.day).millisecondsSinceEpoch;
 
 /// 记忆的唯一入口：事实、情景、检索、旧数据迁移。
 ///
@@ -271,6 +275,108 @@ class MemoryStore {
     return scored.take(k).map((m) => m.key).toList();
   }
 
+  // ---------------------------------------------------------------- 分层块
+
+  /// 按时间升序取情景，供日结/层叠使用。
+  Future<List<Episode>> episodes({int limit = 5000, int? fromMs, int? toMs}) {
+    final q = db.select(db.episodes);
+    if (fromMs != null) q.where((e) => e.at.isBiggerOrEqualValue(fromMs));
+    if (toMs != null) q.where((e) => e.at.isSmallerThanValue(toMs));
+    q.orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.asc)]);
+    q.limit(limit);
+    return q.get();
+  }
+
+  /// 同一天里是否已经有几乎一样的情景（避免重复抽取）。
+  Future<bool> hasSimilarEpisode(String body, {required int fromMs, required int toMs}) async {
+    final t = body.trim();
+    if (t.isEmpty) return false;
+    final rows = await episodes(fromMs: fromMs, toMs: toMs, limit: 500);
+    for (final e in rows) {
+      if (e.body == t) return true;
+      final a = e.body.length < t.length ? e.body : t;
+      final b = e.body.length < t.length ? t : e.body;
+      if (a.length >= 12 && b.contains(a)) return true;
+    }
+    return false;
+  }
+
+  Future<List<Block>> blocksOfTier(int tier, {int limit = 500}) {
+    final q = db.select(db.blocks)
+      ..where((b) => b.tier.equals(tier))
+      ..orderBy([(b) => dr.OrderingTerm(expression: b.createdAt, mode: dr.OrderingMode.asc)])
+      ..limit(limit);
+    return q.get();
+  }
+
+  Future<Set<String>> blockTopics(int tier) async {
+    final rows = await (db.selectOnly(db.blocks)
+          ..addColumns([db.blocks.topic])
+          ..where(db.blocks.tier.equals(tier)))
+        .get();
+    return rows.map((r) => r.read(db.blocks.topic)).whereType<String>().toSet();
+  }
+
+  Future<int> putBlock({
+    required int tier,
+    required String topic,
+    required String summary,
+    required List<int> directIds,
+    required List<int> effectiveIds,
+    int? spanFrom,
+    int? spanTo,
+    DateTime? createdAt,
+  }) {
+    return db.into(db.blocks).insert(
+          BlocksCompanion.insert(
+            tier: tier,
+            topic: dr.Value(topic),
+            summary: summary,
+            directIds: jsonEncode(directIds),
+            effectiveIds: jsonEncode(effectiveIds),
+            createdAt: (createdAt ?? DateTime.now()).millisecondsSinceEpoch,
+            spanFrom: dr.Value(spanFrom),
+            spanTo: dr.Value(spanTo),
+          ),
+        );
+  }
+
+  Future<void> deleteBlock(int id) async {
+    await (db.delete(db.blocks)..where((b) => b.id.equals(id))).go();
+  }
+
+  Future<int> blockCount() async {
+    final c = db.blocks.id.count();
+    final row = await (db.selectOnly(db.blocks)..addColumns([c])).getSingle();
+    return row.read(c) ?? 0;
+  }
+
+  /// 常驻 prompt 的时间线：最近两篇日结 + 今天的情景。
+  Future<String> timelinePrompt({int maxChars = 900}) async {
+    final now = DateTime.now();
+    final cards = await blocksOfTier(1, limit: 200);
+    final recent = cards.where((c) => (c.topic ?? '').startsWith('day:')).toList();
+    final tail = recent.length > 2 ? recent.sublist(recent.length - 2) : recent;
+    final buf = StringBuffer();
+    for (final c in tail) {
+      final key = (c.topic ?? '').replaceFirst('day:', '');
+      final line = '【${dayLabel(key)}】${c.summary}';
+      if (buf.length + line.length > maxChars) break;
+      buf.writeln(line);
+    }
+    final todays = await episodes(fromMs: dayStartMs(now), limit: 4);
+    if (todays.isNotEmpty) {
+      buf.writeln('今天我记下的：');
+      for (final e in todays) {
+        final line = '- ${e.body}';
+        if (buf.length + line.length > maxChars) break;
+        buf.writeln(line);
+      }
+    }
+    if (buf.isEmpty) return '';
+    return '我自己的记忆（自然使用，别照念）：\n${buf.toString().trim()}';
+  }
+
   // ---------------------------------------------------------------- 旧数据
 
   /// 把 SharedPreferences 里的 24 条事实与 JSON 档案导入数据库，只做一次。
@@ -325,5 +431,6 @@ class MemoryStore {
   Future<Map<String, int>> stats() async => {
         'facts': await factCount(),
         'episodes': await episodeCount(),
+        'blocks': await blockCount(),
       };
 }
