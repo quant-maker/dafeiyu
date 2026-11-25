@@ -94,6 +94,51 @@ $transcript''';
 /// 名字归一：去空白、全角空格，统一小写用于匹配（展示仍用原名）。
 String normalizeName(String raw) => raw.replaceAll(RegExp(r'\s+'), '').trim();
 
+/// 别名列的分隔符。用 `|` 而不是逗号，因为名字里本来就可能带逗号。
+const String kAliasSep = '|';
+
+/// 「王总|老王」→ ['王总','老王']。空值、重复、空白都清掉。
+List<String> splitAliases(String? alias) {
+  final raw = (alias ?? '').trim();
+  if (raw.isEmpty) return const <String>[];
+  final seen = <String>{};
+  final out = <String>[];
+  for (final part in raw.split(kAliasSep)) {
+    final t = part.trim();
+    if (t.isEmpty) continue;
+    if (seen.add(normalizeName(t))) out.add(t);
+  }
+  return out;
+}
+
+/// 反向拼回去，顺手去重。
+String joinAliases(List<String> names) {
+  final seen = <String>{};
+  final out = <String>[];
+  for (final n in names) {
+    final t = n.trim();
+    if (t.isEmpty) continue;
+    if (seen.add(normalizeName(t))) out.add(t);
+  }
+  return out.join(kAliasSep);
+}
+
+/// 两个名字是不是像同一个人/同一个东西。
+///
+/// 只做非常保守的判断：完全相同（忽略空白），或者一方包含另一方且长度差不超过 2。
+/// 宁可漏并——漏并只是图上多一颗星，错并会把两个人的记忆搅在一起。
+bool looksSameEntity(String a, String b) {
+  final x = normalizeName(a);
+  final y = normalizeName(b);
+  if (x.isEmpty || y.isEmpty) return false;
+  if (x == y) return true;
+  final short = x.length <= y.length ? x : y;
+  final long = x.length <= y.length ? y : x;
+  if (short.length < 2) return false;
+  if (!long.contains(short)) return false;
+  return long.length - short.length <= 2;
+}
+
 /// 解析图抽取结果。任何坏输入都退化成空图，永不抛。
 GraphDraft parseGraph(String raw) {
   final obj = _extractJsonObject(raw);

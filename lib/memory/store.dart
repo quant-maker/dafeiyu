@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'db.dart';
 import 'db_conn.dart';
+import 'graph.dart';
 import 'scoring.dart';
 import 'timeline.dart';
 
@@ -501,10 +502,8 @@ class MemoryStore {
     final n = name.trim();
     if (n.isEmpty) return 0;
     final when = (at ?? DateTime.now()).millisecondsSinceEpoch;
-    final hit = await (db.select(db.entities)
-          ..where((e) => e.name.equals(n))
-          ..limit(1))
-        .getSingleOrNull();
+    // 先按正名找；找不到再翻一次别名——「老王」和「王总」是同一个人，不该长成两颗星。
+    final hit = await _findByNameOrAlias(n);
     if (hit == null) {
       return db.into(db.entities).insert(
             EntitiesCompanion.insert(
@@ -517,16 +516,126 @@ class MemoryStore {
             ),
           );
     }
+    // 这次是拿别名找上门的，把她记进别名表，下次直接命中。
+    final known = splitAliases(hit.alias);
+    final addAlias = normalizeName(hit.name) != normalizeName(n) && !known.contains(n);
     await (db.update(db.entities)..where((e) => e.id.equals(hit.id))).write(
       EntitiesCompanion(
         kind: dr.Value(hit.kind == 'thing' ? kind : hit.kind),
         importance: dr.Value(importance > hit.importance ? importance : hit.importance),
         lastTouched: dr.Value(when),
         strength: dr.Value(reinforce(hit.strength)),
-        summary: dr.Value(summary ?? hit.summary),
+        summary: dr.Value(_pickSummary(summary, hit.summary)),
+        alias: addAlias ? dr.Value(joinAliases(<String>[...known, n])) : const dr.Value.absent(),
       ),
     );
     return hit.id;
+  }
+
+  /// 正名或别名任一命中就算同一颗星。
+  Future<Entity?> _findByNameOrAlias(String name) async {
+    final n = normalizeName(name);
+    if (n.isEmpty) return null;
+    final byName = await (db.select(db.entities)
+          ..where((e) => e.name.equals(name.trim()))
+          ..limit(1))
+        .getSingleOrNull();
+    if (byName != null) return byName;
+    // 别名存在一个用 | 拼起来的文本列里，SQL 里做 contains 会误伤（go 和 google），
+    // 所以取回来在内存里比。星的数量级是几百，够用。
+    final rows = await entities(limit: 2000);
+    for (final e in rows) {
+      for (final a in splitAliases(e.alias)) {
+        if (normalizeName(a) == n) return e;
+      }
+    }
+    for (final e in rows) {
+      if (looksSameEntity(e.name, name) && e.kind == 'person') return e;
+    }
+    return null;
+  }
+
+  /// 把两颗星并成一颗：边重新接线、权重取大、别名合并，被并掉的那颗删除。
+  ///
+  /// 手动合并留给星图页用；自动抽取走 [upsertEntity] 的别名匹配就够了。
+  Future<void> mergeEntities(int keepId, int dropId, {DateTime? at}) async {
+    if (keepId == dropId) return;
+    final keep = await entityById(keepId);
+    final drop = await entityById(dropId);
+    if (keep == null || drop == null) return;
+    final when = (at ?? DateTime.now()).millisecondsSinceEpoch;
+    await db.transaction(() async {
+      final all = await (db.select(db.edges)
+            ..where((e) =>
+                e.invalidatedAt.isNull() & (e.src.equals(dropId) | e.dst.equals(dropId))))
+          .get();
+      for (final e in all) {
+        final src = e.src == dropId ? keepId : e.src;
+        final dst = e.dst == dropId ? keepId : e.dst;
+        if (src == dst) {
+          await (db.update(db.edges)..where((r) => r.id.equals(e.id))).write(
+            EdgesCompanion(invalidatedAt: dr.Value(when)),
+          );
+          continue;
+        }
+        final dup = await (db.select(db.edges)
+              ..where((r) =>
+                  r.invalidatedAt.isNull() &
+                  r.src.equals(src) &
+                  r.dst.equals(dst) &
+                  r.kind.equals(e.kind) &
+                  r.id.isNotValue(e.id))
+              ..limit(1))
+            .getSingleOrNull();
+        if (dup == null) {
+          await (db.update(db.edges)..where((r) => r.id.equals(e.id))).write(
+            EdgesCompanion(src: dr.Value(src), dst: dr.Value(dst)),
+          );
+        } else {
+          await (db.update(db.edges)..where((r) => r.id.equals(dup.id))).write(
+            EdgesCompanion(weight: dr.Value((dup.weight + e.weight).clamp(0.2, 5.0))),
+          );
+          await (db.update(db.edges)..where((r) => r.id.equals(e.id))).write(
+            EdgesCompanion(invalidatedAt: dr.Value(when)),
+          );
+        }
+      }
+      final aliases = <String>{
+        ...splitAliases(keep.alias),
+        ...splitAliases(drop.alias),
+        if (normalizeName(drop.name) != normalizeName(keep.name)) drop.name,
+      }.toList();
+      await (db.update(db.entities)..where((e) => e.id.equals(keepId))).write(
+        EntitiesCompanion(
+          importance: dr.Value(keep.importance > drop.importance ? keep.importance : drop.importance),
+          strength: dr.Value(keep.strength > drop.strength ? keep.strength : drop.strength),
+          firstSeen: dr.Value(keep.firstSeen < drop.firstSeen ? keep.firstSeen : drop.firstSeen),
+          lastTouched: dr.Value(keep.lastTouched > drop.lastTouched ? keep.lastTouched : drop.lastTouched),
+          summary: dr.Value(_pickSummary(keep.summary, drop.summary)),
+          alias: dr.Value(joinAliases(aliases)),
+        ),
+      );
+      await (db.delete(db.entities)..where((e) => e.id.equals(dropId))).go();
+    });
+  }
+
+  /// 忘掉一颗星：星本身删掉，连着的边一起失效，不碰情景和事实。
+  Future<void> forgetEntity(int id, {DateTime? at}) async {
+    final when = (at ?? DateTime.now()).millisecondsSinceEpoch;
+    await db.transaction(() async {
+      await (db.update(db.edges)
+            ..where((e) => e.invalidatedAt.isNull() & (e.src.equals(id) | e.dst.equals(id))))
+          .write(EdgesCompanion(invalidatedAt: dr.Value(when)));
+      await (db.delete(db.entities)..where((e) => e.id.equals(id))).go();
+    });
+  }
+
+  String? _pickSummary(String? a, String? b) {
+    final x = (a ?? '').trim();
+    final y = (b ?? '').trim();
+    if (x.isEmpty) return y.isEmpty ? null : y;
+    if (y.isEmpty) return x;
+    return x.length >= y.length ? x : y;
   }
 
   /// 手动点亮一颗星（被聊到、被点开）。
