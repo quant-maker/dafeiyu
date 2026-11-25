@@ -796,6 +796,43 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     return '${d.month}月${d.day}日';
   }
 
+  /// 设置页的「现在就整理一次」。
+  ///
+  /// 自动整理要等攒够 20 条消息，第一次用会看不到任何星。这里让用户手动触发一次，
+  /// 立刻把最近说的话折成情景/星/日结，好验证整条链路是通的。
+  Future<String> _memoryNow() async {
+    final s = _settings;
+    final c = _curator(s);
+    if (s == null || c == null) return '还没设置好模型，整理不了';
+    final all = _messages.where((m) => m.content.trim().isNotEmpty).toList();
+    final recent = all.length > 60 ? all.sublist(all.length - 60) : all;
+    final turns = recent
+        .map((m) => TranscriptTurn(fromUser: m.role == 'user', text: m.content))
+        .toList();
+    if (turns.isEmpty) return '还没有可以整理的话';
+    try {
+      final sensitive = s.privacyLocalOnly && looksSensitive(recent.map((m) => m.content).join('\n'));
+      final eps = await c.extractEpisodes(turns, at: DateTime.now(), localOnly: sensitive);
+      final stars = sensitive ? 0 : await c.extractGraph(turns, at: DateTime.now());
+      final report = await c.runMaintenance();
+      await _reloadMemory();
+      final parts = <String>[
+        if (eps > 0) '情景 +$eps',
+        if (stars > 0) '星 +$stars',
+        if (report.dayCards > 0) '日结 +${report.dayCards}',
+        if (report.weekCards > 0) '周结 +${report.weekCards}',
+        if (report.monthCards > 0) '月结 +${report.monthCards}',
+      ];
+      if (parts.isEmpty) {
+        return sensitive ? '这段里有敏感话题，只留在本机了' : '这次没抽出新东西，多聊几句再试';
+      }
+      final tail = sensitive ? '（这段有敏感内容，只存本机）' : '';
+      return '整理好了：${parts.join('，')}$tail';
+    } catch (e) {
+      return '整理失败：$e';
+    }
+  }
+
   Future<void> _openSettings() async {
     final s = await Navigator.of(context).push<Settings>(
       MaterialPageRoute(
@@ -805,6 +842,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           memory: _store,
           onMemoryChanged: _reloadMemory,
           onTellAbout: _tellAboutEntity,
+          onMemoryNow: _memoryNow,
           onTryInitiative: _tryInitiativeNow,
           initialInitiativeStatus: _lastInitiativeStatus,
           initialNextCheck: _nextCheckLabel,
@@ -3079,6 +3117,7 @@ class SettingsPage extends StatefulWidget {
   final MemoryStore? memory;
   final Future<void> Function()? onMemoryChanged;
   final GalaxyAsk? onTellAbout;
+  final Future<String> Function()? onMemoryNow;
   final Future<String> Function()? onTryInitiative;
   final String? initialInitiativeStatus;
   final String? initialNextCheck;
@@ -3089,6 +3128,7 @@ class SettingsPage extends StatefulWidget {
     required this.memory,
     this.onMemoryChanged,
     this.onTellAbout,
+    this.onMemoryNow,
     this.onTryInitiative,
     this.initialInitiativeStatus,
     this.initialNextCheck,
@@ -3108,6 +3148,8 @@ class _SettingsPageState extends State<SettingsPage> {
   List<Fact> _facts = const [];
   int _stars = 0;
   String? _exportHint;
+  String? _memoryNowHint;
+  bool _memoryNowBusy = false;
   late bool _proactiveEnabled;
   late bool _proactiveShareEnabled;
   late bool _sceneEnabled;
@@ -3471,6 +3513,23 @@ class _SettingsPageState extends State<SettingsPage> {
       if (!mounted) return;
       setState(() => _exportHint = '导出失败：$e');
     }
+  }
+
+  /// 手动跑一次整理，让用户不用等攒够消息就能看到星。
+  Future<void> _runMemoryNow() async {
+    final fn = widget.onMemoryNow;
+    if (fn == null || _memoryNowBusy) return;
+    setState(() {
+      _memoryNowBusy = true;
+      _memoryNowHint = '正在整理…';
+    });
+    final text = await fn();
+    if (!mounted) return;
+    setState(() {
+      _memoryNowBusy = false;
+      _memoryNowHint = text;
+    });
+    await _loadFacts();
   }
 
   /// 清空整库。这是不可逆操作，所以先问一遍。
@@ -4135,6 +4194,19 @@ class _SettingsPageState extends State<SettingsPage> {
               Row(
                 children: <Widget>[
                   TextButton.icon(
+                    key: const ValueKey('settings-memory-now'),
+                    onPressed: widget.onMemoryNow == null || _memoryNowBusy ? null : _runMemoryNow,
+                    icon: _memoryNowBusy
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 1.6),
+                          )
+                        : const Icon(Icons.auto_fix_high_outlined, size: 16),
+                    label: const Text('现在就整理一次'),
+                  ),
+                  const SizedBox(width: AppSpacing.s),
+                  TextButton.icon(
                     key: const ValueKey('settings-export-memory'),
                     onPressed: widget.memory == null ? null : _exportMemory,
                     icon: const Icon(Icons.file_download_outlined, size: 16),
@@ -4152,6 +4224,8 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               if (_exportHint != null)
                 Text(_exportHint!, style: AppType.caption.copyWith(color: AppPalette.text3)),
+              if (_memoryNowHint != null)
+                Text(_memoryNowHint!, style: AppType.caption.copyWith(color: AppPalette.text3)),
               const SizedBox(height: 14),
               _SettingsSwitch(
                 title: '主动开口',

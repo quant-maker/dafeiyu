@@ -369,13 +369,18 @@ class MemoryStore {
   // ---------------------------------------------------------------- 分层块
 
   /// 按时间升序取情景，供日结/层叠使用。
-  Future<List<Episode>> episodes({int limit = 5000, int? fromMs, int? toMs}) {
+  /// 取情景，按时间正序返回。
+  ///
+  /// [limit] 限定的是「最近多少条」而不是「最早多少条」：库里超过上限时，
+  /// 先丢的应该是陈年旧账，不是今天的对话。取完再翻回正序，调用方不用关心。
+  Future<List<Episode>> episodes({int limit = 5000, int? fromMs, int? toMs}) async {
     final q = db.select(db.episodes);
     if (fromMs != null) q.where((e) => e.at.isBiggerOrEqualValue(fromMs));
     if (toMs != null) q.where((e) => e.at.isSmallerThanValue(toMs));
-    q.orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.asc)]);
+    q.orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.desc)]);
     q.limit(limit);
-    return q.get();
+    final rows = await q.get();
+    return rows.reversed.toList();
   }
 
   /// 同一天里是否已经有几乎一样的情景（避免重复抽取）。
