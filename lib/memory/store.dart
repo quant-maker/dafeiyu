@@ -217,25 +217,80 @@ class MemoryStore {
     return '今天早些时候的摘要：\n${pick.map((e) => '- ${e.body}').join('\n')}';
   }
 
-  /// 混合召回：向量相似度与关键词取大，再按 相关×重要×新鲜×重复 排序。
+  /// 关键词候选：够长就走 FTS5 trigram（快、能命中子串），太短退化成 LIKE。
+  Future<List<Episode>> _keywordCandidates(String query, {int limit = 300}) async {
+    final q = query.trim();
+    if (q.isEmpty) return const <Episode>[];
+    if (q.length >= 3) {
+      try {
+        final rows = await db.customSelect(
+          'SELECT rowid AS id FROM episode_fts WHERE episode_fts MATCH ? LIMIT ?',
+          variables: <dr.Variable>[dr.Variable.withString('"$q"'), dr.Variable.withInt(limit)],
+        ).get();
+        final ids = rows.map((r) => r.read<int>('id')).toList();
+        if (ids.isNotEmpty) {
+          final list = await (db.select(db.episodes)..where((e) => e.id.isIn(ids))).get();
+          if (list.isNotEmpty) return list;
+        }
+      } catch (_) {
+        // FTS 不可用（老库/特殊构建）就掉回 LIKE。
+      }
+    }
+    return (db.select(db.episodes)
+          ..where((e) => e.title.like('%$q%') | e.body.like('%$q%'))
+          ..orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.desc)])
+          ..limit(limit))
+        .get();
+  }
+
+  /// 沿实体边做一跳扩展：从种子情景出发找到它们提到的人/事，
+  /// 再收集那些实体连着的其他情景，给一个递减的加成。
+  Future<Map<int, double>> _graphBoost(List<int> seedPaths) async {
+    if (seedPaths.isEmpty) return const <int, double>{};
+    try {
+      final seedEdges = await (db.select(db.edges)
+            ..where((e) => e.evidenceEpisode.isIn(seedPaths) & e.invalidatedAt.isNull())
+            ..limit(400))
+          .get();
+      final seeds = <int>{};
+      for (final e in seedEdges) {
+        seeds.add(e.src);
+        seeds.add(e.dst);
+      }
+      if (seeds.isEmpty) return const <int, double>{};
+      final near = await (db.select(db.edges)
+            ..where((e) => (e.src.isIn(seeds) | e.dst.isIn(seeds)) & e.invalidatedAt.isNull())
+            ..limit(800))
+          .get();
+      final boost = <int, double>{};
+      for (final e in near) {
+        final ep = e.evidenceEpisode;
+        if (ep == null || seedPaths.contains(ep)) continue;
+        final w = 0.18 * (e.weight.clamp(0.2, 5.0) / 5.0);
+        if (w > (boost[ep] ?? 0)) boost[ep] = w;
+      }
+      return boost;
+    } catch (_) {
+      return const <int, double>{};
+    }
+  }
+
+  /// 混合召回：FTS5 关键词 + int8 向量 + 实体图一跳扩展，再按 相关×重要×新鲜×重复 排序。
   Future<List<Episode>> search({
     List<double>? vector,
     String? keyword,
     int k = 3,
     double threshold = 0.30,
     bool includeLocalOnly = true,
+    bool expand = true,
   }) async {
     final query = (keyword ?? '').trim();
     final qv = (vector == null || vector.isEmpty) ? null : quantizeVector(vector);
 
-    // 候选：有关键词就先用 LIKE 圈一批，否则全取（手机上量不会太大）。
+    // 候选：有关键词就先用 FTS/LIKE 圈一批，否则全取（手机上量不会太大）。
     List<Episode> pool;
     if (query.isNotEmpty) {
-      pool = await (db.select(db.episodes)
-            ..where((e) => e.title.like('%$query%') | e.body.like('%$query%'))
-            ..orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.desc)])
-            ..limit(300))
-          .get();
+      pool = await _keywordCandidates(query);
       if (pool.length < 5) {
         pool = await (db.select(db.episodes)
               ..orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.desc)])
@@ -272,7 +327,36 @@ class MemoryStore {
       if (score >= threshold) scored.add(MapEntry(e, score));
     }
     scored.sort((a, b) => b.value.compareTo(a.value));
-    return scored.take(k).map((m) => m.key).toList();
+
+    if (!expand || scored.isEmpty) {
+      return scored.take(k).map((m) => m.key).toList();
+    }
+
+    // 图扩展：种子用当前前几名，接回来的情景按加成重新计分。
+    final seeds = scored.take(k).map((m) => m.key.id).toList();
+    final boost = await _graphBoost(seeds);
+    if (boost.isEmpty) return scored.take(k).map((m) => m.key).toList();
+
+    final seen = scored.map((m) => m.key.id).toSet();
+    final missing = boost.keys.where((id) => !seen.contains(id)).toList();
+    final extra = <MapEntry<Episode, double>>[];
+    if (missing.isNotEmpty) {
+      final rows = await (db.select(db.episodes)..where((e) => e.id.isIn(missing))).get();
+      for (final e in rows) {
+        if (!includeLocalOnly && e.localOnly) continue;
+        final rec = recencyScore(DateTime.fromMillisecondsSinceEpoch(e.at), now);
+        final base = hybridScore(
+          relevance: boost[e.id] ?? 0.18,
+          importance: e.weight,
+          recency: rec,
+          repetition: 0.5,
+        );
+        extra.add(MapEntry(e, base));
+      }
+    }
+    final merged = <MapEntry<Episode, double>>[...scored, ...extra]
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return merged.take(k).map((m) => m.key).toList();
   }
 
   // ---------------------------------------------------------------- 分层块
@@ -345,9 +429,11 @@ class MemoryStore {
     await (db.delete(db.blocks)..where((b) => b.id.equals(id))).go();
   }
 
-  Future<int> blockCount() async {
+  Future<int> blockCount({int? tier}) async {
     final c = db.blocks.id.count();
-    final row = await (db.selectOnly(db.blocks)..addColumns([c])).getSingle();
+    final q = db.selectOnly(db.blocks)..addColumns(<dr.Expression<Object>>[c]);
+    if (tier != null) q.where(db.blocks.tier.equals(tier));
+    final row = await q.getSingle();
     return row.read(c) ?? 0;
   }
 
@@ -570,4 +656,134 @@ class MemoryStore {
         'entities': await entityCount(),
         'edges': await edgeCount(),
       };
+
+  /// 主动开口的素材：挑一颗久没碰过、但有细节的星，交给她决定提不提。
+  Future<String> hookLine({int staleDays = 21, DateTime? now}) async {
+    try {
+      final at = now ?? DateTime.now();
+      final cutoff = at.subtract(Duration(days: staleDays)).millisecondsSinceEpoch;
+      final rows = await entities(limit: 800);
+      if (rows.isEmpty) return '';
+      rows.sort((a, b) => a.lastTouched.compareTo(b.lastTouched));
+      for (final e in rows) {
+        if (e.lastTouched >= cutoff) break;
+        final detail = (e.summary ?? '').trim();
+        if (detail.length < 4) continue;
+        final days = at
+            .difference(DateTime.fromMillisecondsSinceEpoch(e.lastTouched))
+            .inDays
+            .clamp(1, 999);
+        final short = detail.length > 80 ? '${detail.substring(0, 80)}…' : detail;
+        return '你已经 $days 天没提过「${e.name}」了，上次说到：$short';
+      }
+      return '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// 记性体检：够不够厚、有没有打架的事实、哪些星快灭了。
+  Future<MemoryHealth> health({DateTime? now}) async {
+    final at = now ?? DateTime.now();
+    final facts = await this.facts(includeInvalidated: false);
+    final eps = await episodes(limit: 2000);
+    final stars = await entities(limit: 800);
+
+    // 同一主谓却有不同宾语 → 说法打架。
+    final groups = <String, List<Fact>>{};
+    for (final f in facts) {
+      final subj = (f.subject ?? '').trim();
+      final pred = (f.predicate ?? '').trim();
+      final obj = (f.object ?? '').trim();
+      if (subj.isEmpty || pred.isEmpty || obj.isEmpty) continue;
+      groups.putIfAbsent('$subj|$pred', () => <Fact>[]).add(f);
+    }
+    final conflicts = <String>[];
+    for (final entry in groups.entries) {
+      final objs = entry.value.map((f) => (f.object ?? '').trim()).toSet();
+      if (objs.length > 1) {
+        final label = entry.key.replaceFirst('|', ' 的 ');
+        conflicts.add('$label：${objs.join(' / ')}');
+        if (conflicts.length >= 5) break;
+      }
+    }
+
+    // 超过 30 天没被碰过、而且本来就淡的星。
+    final staleCutoff = at.subtract(const Duration(days: 30)).millisecondsSinceEpoch;
+    final stale = <String>[];
+    for (final s in stars) {
+      if (s.lastTouched < staleCutoff && s.strength < 1.0) {
+        stale.add(s.name);
+        if (stale.length >= 5) break;
+      }
+    }
+
+    var localOnly = 0;
+    for (final e in eps) {
+      if (e.localOnly) localOnly++;
+    }
+
+    return MemoryHealth(
+      episodes: eps.length,
+      facts: facts.length,
+      entities: stars.length,
+      edges: await edgeCount(),
+      dayCards: await blockCount(tier: 1),
+      weekCards: await blockCount(tier: 2),
+      monthCards: await blockCount(tier: 3),
+      localOnly: localOnly,
+      oldestAt: eps.isEmpty ? 0 : eps.first.at,
+      newestAt: eps.isEmpty ? 0 : eps.last.at,
+      conflicts: conflicts,
+      staleStars: stale,
+      generatedAt: at.millisecondsSinceEpoch,
+    );
+  }
+}
+
+/// 体检结果，纯数据，方便测试和界面直接用。
+class MemoryHealth {
+  final int episodes;
+  final int facts;
+  final int entities;
+  final int edges;
+  final int dayCards;
+  final int weekCards;
+  final int monthCards;
+  final int localOnly;
+  final int oldestAt;
+  final int newestAt;
+  final List<String> conflicts;
+  final List<String> staleStars;
+  final int generatedAt;
+
+  const MemoryHealth({
+    required this.episodes,
+    required this.facts,
+    required this.entities,
+    required this.edges,
+    required this.dayCards,
+    required this.weekCards,
+    required this.monthCards,
+    required this.localOnly,
+    required this.oldestAt,
+    required this.newestAt,
+    required this.conflicts,
+    required this.staleStars,
+    required this.generatedAt,
+  });
+
+  /// 0..1：情景、事实、星三样都有一点才算「记得住」。
+  double get fullness {
+    double part(int n, int target) => (n / target).clamp(0.0, 1.0);
+    return (part(episodes, 30) * 0.5 + part(facts, 15) * 0.3 + part(entities, 20) * 0.2);
+  }
+
+  int get spanDays {
+    if (oldestAt <= 0 || newestAt <= oldestAt) return 0;
+    return DateTime.fromMillisecondsSinceEpoch(newestAt)
+            .difference(DateTime.fromMillisecondsSinceEpoch(oldestAt))
+            .inDays +
+        1;
+  }
 }

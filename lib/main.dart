@@ -27,6 +27,7 @@ import 'memory/archive.dart';
 import 'memory/curator.dart';
 import 'memory/db.dart' show Fact;
 import 'memory/galaxy_page.dart';
+import 'memory/health_page.dart';
 import 'memory/store.dart';
 import 'ui/attachments.dart';
 import 'ui/avatar_mark.dart';
@@ -2380,10 +2381,20 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     try {
       setState(() => _busy = true);
 
+      // 旧事：给她一颗很久没碰的星当话头，用不用由她决定。
+      var nudge = isShare ? _sharePrompt() : _chatNudge;
+      if (!isShare) {
+        final hook = await _store?.hookLine() ?? '';
+        if (hook.isNotEmpty) {
+          nudge = '$nudge\n\n记忆里有一件旧事：$hook。'
+              '如果这会儿接得上就顺口提一句，接不上就算了，别硬拉。';
+        }
+      }
+
       var said = await _runProactiveTurn(
         s,
         recent,
-        isShare ? _sharePrompt() : _chatNudge,
+        nudge,
       );
 
       if (!mounted || said.isEmpty || isSilenceReply(said)) {
@@ -3432,6 +3443,16 @@ class _SettingsPageState extends State<SettingsPage> {
     await _loadFacts();
   }
 
+  Future<void> _openHealth() async {
+    final store = widget.memory;
+    if (store == null) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => MemoryHealthPage(store: store)),
+    );
+    if (!mounted) return;
+    await _loadFacts();
+  }
+
   Future<String?> _promptFact({String initial = ''}) async {
     final ctrl = TextEditingController(text: initial);
     final result = await showDialog<String>(
@@ -3939,6 +3960,33 @@ class _SettingsPageState extends State<SettingsPage> {
                             Text('记忆星图', style: AppType.body.copyWith(color: AppPalette.text1)),
                             Text(
                               _stars == 0 ? '还没有星，聊聊就有了' : '$_stars 颗星，点开可以让她讲',
+                              style: AppType.caption.copyWith(color: AppPalette.text3),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(Icons.chevron_right, size: 18, color: AppPalette.text4),
+                    ],
+                  ),
+                ),
+              ),
+              InkWell(
+                key: const ValueKey('settings-open-health'),
+                borderRadius: BorderRadius.circular(AppRadii.m),
+                onTap: widget.memory == null ? null : _openHealth,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Row(
+                    children: <Widget>[
+                      const Icon(Icons.monitor_heart_outlined, size: 18, color: AppPalette.primary),
+                      const SizedBox(width: AppSpacing.s),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Text('记忆体检', style: AppType.body.copyWith(color: AppPalette.text1)),
+                            Text(
+                              '记得多厚、有没有说法打架、哪些星快灭了',
                               style: AppType.caption.copyWith(color: AppPalette.text3),
                             ),
                           ],
