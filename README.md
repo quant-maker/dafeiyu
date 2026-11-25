@@ -14,7 +14,8 @@
 | 流式对话 | SSE 逐字输出，可随时中断 |
 | 语音输入 | Android 走系统 `SpeechRecognizer`；Web 走浏览器 Web Speech |
 | 拍照 / 选图 | 以 OpenAI `image_url` content part 发给视觉模型 |
-| 自动记忆 | 每 3 轮抽取一次关于主人的长期事实，本地留存并注入 system prompt |
+| 自动记忆 | 每 3 轮抽取一次关于主人的长期事实，存本地 SQLite，按重要度保留并注入 system prompt |
+| 记忆库 | drift/SQLite：事实 / 情景 / 实体 / 关系 / 分层块，向量 int8 量化后本地检索 |
 | 人设可改 | 内置一段「大肥鱼」system prompt，随时替换 |
 | 模型下拉 | 从 `/models` 拉取列表，也可手填 |
 
@@ -28,6 +29,7 @@ lib/                    Flutter 客户端（main.dart 为入口与核心编排�
 server/server.mjs       本地 Web 服务器：托管页面 + 反代 /v1（解决浏览器 CORS）
 tools/                  本地构建脚本（Windows / PowerShell，仅 Web）
   build-web.ps1         编译 Web 版（在仓库根目录直接构建）
+  fetch-web-assets.ps1  刷新 web/sqlite3.wasm 与 web/drift_worker.js（换 drift 版本时跑）
   install-toolchain.ps1 无管理员安装 JDK + Android SDK + Flutter
 .github/workflows/      CI：打 tag 时构建并发布 Android APK / macOS / Web
 ```
@@ -57,4 +59,4 @@ node server/server.mjs       # 打开 http://127.0.0.1:8090
 
 ## 状态
 
-早期版本：单一会话、记忆按条累积、无后台推送。后续计划是本地剪辑历史、主动消息、桌面形象。
+v0.15.7：记忆系统 P0 落地（SQLite/drift，取代原来的 24 条便利贴与单 JSON 归档，旧数据自动迁移）。四层记忆（工作 / 情景 / 事实 / 分层块）与星图可视化见 `docs/memory-design.md`，P1–P5 按那份文档推进。

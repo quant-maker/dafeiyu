@@ -51,13 +51,21 @@ jobs:
       - name: Build APK
         run: |
           set -o pipefail
-          if ! flutter build apk --release --target-platform android-arm64 --build-number=$(date +%y%m%d%H) 2>&1 | tee /tmp/build.log; then
-            echo "===== tail ====="; tail -25 /tmp/build.log | sed 's/\r$//'
-            grep -n -A 12 -iE 'what went wrong|error:|FAILURE' /tmp/build.log | head -60 | sed 's/\r$//' | while IFS= read -r line; do
+          ok=0
+          for attempt in 1 2 3; do
+            echo "===== attempt $attempt ====="
+            if flutter build apk --release --target-platform android-arm64 --build-number=$(date +%y%m%d%H) 2>&1 | tee /tmp/build.log; then
+              ok=1
+              break
+            fi
+            echo "===== tail ====="; tail -30 /tmp/build.log | sed 's/\r$//'
+            grep -n -iE 'what went wrong|could not (resolve|get|download|find)|caused by|error:|FAILURE|timed out' /tmp/build.log | head -40 | sed 's/\r$//' | while IFS= read -r line; do
               [ -n "$line" ] && echo "::error::$line"
             done
-            exit 1
-          fi
+            # Maven Central / Google 偶尔抽风，重试一次往往就过
+            sleep 20
+          done
+          [ "$ok" = "1" ] || exit 1
 
       - name: Rename APKs with the tag
         run: |
