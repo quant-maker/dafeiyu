@@ -24,6 +24,8 @@ import 'feeds/footprints.dart';
 import 'providers.dart';
 import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
+import 'memory/db.dart' show Fact;
+import 'memory/store.dart';
 import 'ui/attachments.dart';
 import 'ui/avatar_mark.dart';
 import 'ui/call_banner.dart';
@@ -319,41 +321,6 @@ class Settings {
   }
 }
 
-class Memory {
-  static const _k = 'feiyu.memory.v1';
-  final List<String> facts = [];
-
-  static Future<Memory> load() async {
-    final sp = await SharedPreferences.getInstance();
-    final m = Memory();
-    m.facts.addAll((sp.getStringList(_k) ?? const []).where((e) => e.trim().isNotEmpty));
-    return m;
-  }
-
-  Future<void> save() async {
-    final sp = await SharedPreferences.getInstance();
-    await sp.setStringList(_k, facts);
-  }
-
-  Future<void> merge(Iterable<String> incoming) async {
-    for (final item in incoming) {
-      final t = item.trim();
-      if (t.isEmpty) continue;
-      final dup = facts.any((f) => f == t || (f.length > 8 && t.length > 8 && (f.contains(t) || t.contains(f))));
-      if (!dup) facts.add(t);
-    }
-    while (facts.length > 24) {
-      facts.removeAt(0);
-    }
-    await save();
-  }
-
-  String asPrompt() {
-    if (facts.isEmpty) return '';
-    return '你记得关于主人的这些事（长期记忆，自然使用，不要逐条复述）：\n${facts.map((f) => '- $f').join('\n')}';
-  }
-}
-
 class _ModelMissing implements Exception {
   @override
   String toString() => '离线语音模型还没下载';
@@ -563,8 +530,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   bool get _inCall => _callPhase != CallPhase.off;
   bool _recording = false;
   String? _recordPath;
-  Memory _memory = Memory();
-  Archive _archive = Archive();
+  MemoryStore? _store;
+  String _factsPrompt = '';
+  String _digest = '';
   int _summarized = 0;
   List<Footprint> _footprints = const [];
 
@@ -678,15 +646,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         });
       }
     });
-    Memory.load().then((m) {
-      if (mounted) setState(() => _memory = m);
+    MemoryStore.open().then((store) {
+      if (!mounted) return;
+      setState(() => _store = store);
+      unawaited(_reloadMemory());
     }).catchError((Object e) {
-      debugPrint('[feiyu] memory load FAILED: $e');
-    });
-    Archive.load().then((a) {
-      if (mounted) setState(() => _archive = a);
-    }).catchError((Object e) {
-      debugPrint('[feiyu] archive load FAILED: $e');
+      debugPrint('[feiyu] memory open FAILED: $e');
     });
     FootprintStore.load().then((items) {
       if (mounted) setState(() => _footprints = items);
@@ -792,7 +757,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         builder: (_) => SettingsPage(
           initial: _settings ??
               Settings(baseUrl: defaultBaseUrl(), apiKey: '', model: kDefaultModel, persona: kPresetPersona),
-          memory: _memory,
+          memory: _store,
+          onMemoryChanged: _reloadMemory,
           onTryInitiative: _tryInitiativeNow,
           initialInitiativeStatus: _lastInitiativeStatus,
           initialNextCheck: _nextCheckLabel,
@@ -1418,8 +1384,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           '如果你没把握，就直说"我不确定"，别硬编。',
       '现在是 $today。下面的对话记录可能跨越好几天，注意日期。'
           '如果对方问起以前聊过的事，先看记录和记忆；确实没有就直说没印象，不要编。',
-      if (s.memoryEnabled) _memory.asPrompt(),
-      _recentDigest(),
+      if (s.memoryEnabled) _factsPrompt,
+      _digest,
       '你可以调用这些工具：'
           '① fetch_url 抓网页正文（查资料、看链接时用，别凭空猜网页内容）；'
           '② remember 把值得长期记住的事记下来（对方的偏好、约定、正在做的项目、重要经历），'
@@ -1822,7 +1788,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (name == 'remember') {
       final fact = (args['fact'] ?? '').toString().trim();
       if (fact.isEmpty) return '没有可记的内容';
-      await _memory.merge([fact]);
+      await _store?.addFact(fact, importance: 4);
+      await _reloadMemory();
       if (mounted) setState(() => _activity = '记下了：$fact');
       await Future<void>.delayed(const Duration(milliseconds: 400));
       if (mounted) setState(() => _activity = '');
@@ -2519,8 +2486,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           .where((l) => l.isNotEmpty && l != '无')
           .toList();
       if (lines.isEmpty) return;
-      await _memory.merge(lines);
-      if (mounted) setState(() {});
+      await _store?.mergeFacts(lines);
+      await _reloadMemory();
     } catch (_) {}
   }
 
@@ -2645,15 +2612,21 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Embedder _embedder(Settings s) =>
       Embedder(baseUrl: s.baseUrl, apiKey: s.apiKey, model: s.embeddingModel);
 
-  /// The last two archive entries of today, always visible to the model.
-  String _recentDigest() {
-    if (_archive.entries.isEmpty) return '';
-    final now = DateTime.now();
-    final key = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-    final todays = _archive.entries.where((e) => e.day == key).toList();
-    final pick = todays.length > 2 ? todays.sublist(todays.length - 2) : todays;
-    if (pick.isEmpty) return '';
-    return '今天早些时候的摘要：\n${pick.map((e) => '- ${e.text}').join('\n')}';
+  /// 记忆落库后刷新常驻 prompt 片段（事实 + 今天的摘要）。
+  Future<void> _reloadMemory() async {
+    final store = _store;
+    if (store == null) return;
+    try {
+      final prompt = await store.factsPrompt();
+      final digest = await store.recentDigest();
+      if (!mounted) return;
+      setState(() {
+        _factsPrompt = prompt;
+        _digest = digest;
+      });
+    } catch (e) {
+      debugPrint('[feiyu] memory reload FAILED: $e');
+    }
   }
 
   /// Compress the backlog into one archive paragraph when it grows too long.
@@ -2680,8 +2653,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               'messages': [
                 {
                   'role': 'system',
-                  'content': '把这段对话压缩成一段摘要，供以后检索：写清聊了什么、结论或决定、'
-                      '以及对方透露的偏好或正在做的事。第三人称，客观，不超过 200 字。不要寒暄。'
+                  'content': '把这段对话压缩成一段摘要，供以后检索。写清：聊了什么、结论或决定、'
+                      '对方透露的偏好或正在做的事、答应过的事。第三人称，客观，不超过 200 字。'
+                      '寒暄、重复、已经写进上面几点的废话都不要。'
                 },
                 {'role': 'user', 'content': transcript},
               ],
@@ -2693,13 +2667,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       final summary = ((j['choices'] as List).first['message'] as Map)['content'] as String? ?? '';
       if (summary.trim().isEmpty) return;
 
-      final now = DateTime.now();
-      final day = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
       final vector = await _embedder(s).embed(summary) ?? const <double>[];
-      await _archive.add(ArchiveEntry(day: day, text: summary.trim(), vector: vector));
+      await _store?.addEpisode(
+        at: DateTime.now(),
+        body: summary.trim(),
+        vector: vector,
+        importance: 3,
+      );
       _summarized = _messages.length - 4;
       debugPrint('[feiyu] archived ${summary.length} chars');
-      if (mounted) setState(() {});
+      await _reloadMemory();
     } catch (e) {
       debugPrint('[feiyu] summarize FAILED: $e');
     }
@@ -2707,11 +2684,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   Future<String> _recall(String query) async {
     final s = _settings;
-    if (s == null) return '还没有设置，无法检索';
+    final store = _store;
+    if (s == null || store == null) return '还没有设置，无法检索';
     final vector = await _embedder(s).embed(query);
-    final hits = _archive.search(vector, query, k: 3);
+    final hits = await store.search(vector: vector, keyword: query, k: 3);
     if (hits.isEmpty) return '没有找到相关的旧记录';
-    return '找到这些旧记录：\n${hits.map((e) => '【${e.day}】${e.text}').join('\n\n')}';
+    String day(int ms) {
+      final d = DateTime.fromMillisecondsSinceEpoch(ms);
+      return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    }
+
+    return '找到这些旧记录：\n${hits.map((e) => '【${day(e.at)}】${e.body}').join('\n\n')}';
   }
 
   // ---------------- footprints ----------------
@@ -2985,7 +2968,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
 class SettingsPage extends StatefulWidget {
   final Settings initial;
-  final Memory memory;
+  final MemoryStore? memory;
+  final Future<void> Function()? onMemoryChanged;
   final Future<String> Function()? onTryInitiative;
   final String? initialInitiativeStatus;
   final String? initialNextCheck;
@@ -2994,6 +2978,7 @@ class SettingsPage extends StatefulWidget {
     super.key,
     required this.initial,
     required this.memory,
+    this.onMemoryChanged,
     this.onTryInitiative,
     this.initialInitiativeStatus,
     this.initialNextCheck,
@@ -3009,7 +2994,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _model;
   late final TextEditingController _persona;
   late bool _memoryEnabled;
-  late List<String> _facts;
+  List<Fact> _facts = const [];
   late bool _proactiveEnabled;
   late bool _proactiveShareEnabled;
   late bool _sceneEnabled;
@@ -3059,7 +3044,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _model = TextEditingController(text: widget.initial.model);
     _persona = TextEditingController(text: widget.initial.persona);
     _memoryEnabled = widget.initial.memoryEnabled;
-    _facts = List.of(widget.memory.facts);
+    _facts = const [];
+    unawaited(_loadFacts());
     _proactiveEnabled = widget.initial.proactiveEnabled;
     _proactiveShareEnabled = widget.initial.proactiveShareEnabled;
     _sceneEnabled = widget.initial.sceneEnabled;
@@ -3340,10 +3326,16 @@ class _SettingsPageState extends State<SettingsPage> {
     await _persist();
   }
 
-  void _showMemoryCapMessage() {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(const SnackBar(content: Text('最多记 24 条，先删一条吧')));
+  Future<void> _loadFacts() async {
+    final store = widget.memory;
+    if (store == null) return;
+    try {
+      final facts = await store.facts();
+      if (!mounted) return;
+      setState(() => _facts = facts);
+    } catch (e) {
+      debugPrint('[feiyu] load facts FAILED: $e');
+    }
   }
 
   Future<String?> _promptFact({String initial = ''}) async {
@@ -3379,40 +3371,33 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _editFact(int index) async {
-    final result = await _promptFact(initial: _facts[index]);
+    if (index < 0 || index >= _facts.length) return;
+    final target = _facts[index];
+    final result = await _promptFact(initial: target.content);
     if (!mounted || result == null || result.isEmpty) return;
-    _facts[index] = result;
-    widget.memory.facts[index] = result;
-    await widget.memory.save();
-    if (!mounted) return;
-    setState(() {});
+    await widget.memory?.updateFactText(target.id, result);
+    await widget.onMemoryChanged?.call();
+    await _loadFacts();
   }
 
   Future<void> _addFact() async {
-    if (_facts.length >= 24) {
-      _showMemoryCapMessage();
-      return;
-    }
     final result = await _promptFact();
     if (!mounted || result == null || result.isEmpty) return;
-    if (_facts.length >= 24) {
-      _showMemoryCapMessage();
-      return;
-    }
-    _facts.add(result);
-    widget.memory.facts.add(result);
-    await widget.memory.save();
-    if (!mounted) return;
-    setState(() {});
+    await widget.memory?.addFact(result, importance: 4);
+    await widget.onMemoryChanged?.call();
+    await _loadFacts();
   }
 
   Future<void> _deleteFact(int index) async {
-    _facts.removeAt(index);
-    widget.memory.facts.removeAt(index);
-    setState(() {});
-    await widget.memory.save();
-    if (!mounted) return;
-    setState(() {});
+    if (index < 0 || index >= _facts.length) return;
+    final id = _facts[index].id;
+    setState(() {
+      final next = List<Fact>.of(_facts)..removeAt(index);
+      _facts = next;
+    });
+    await widget.memory?.deleteFact(id);
+    await widget.onMemoryChanged?.call();
+    await _loadFacts();
   }
 
   @override
@@ -3857,7 +3842,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       children: <Widget>[
                         Expanded(
                           child: Text(
-                            fact,
+                            fact.content,
                             maxLines: 3,
                             overflow: TextOverflow.ellipsis,
                             style: AppType.bodySmall.copyWith(color: AppPalette.text2),

@@ -45,3 +45,8 @@ git-push
 .tools-tmp/
 error.txt
 .flutter-plugins-dependencies
+
+# drift worker build artifacts
+web/drift_worker.js.deps
+web/drift_worker.js.map
+
