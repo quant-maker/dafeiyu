@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:drift/drift.dart' as dr;
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'db.dart';
@@ -51,8 +52,9 @@ class MemoryStore {
   }
 
   /// 稳定注入用：按 重要度 × 新鲜度 取，字符预算封顶。
+  /// 标了 `localOnly` 的事实一律不进 prompt（敏感内容只留在本机）。
   Future<String> factsPrompt({int maxChars = 1200}) async {
-    final all = await facts();
+    final all = (await facts()).where((f) => !f.localOnly).toList();
     if (all.isEmpty) return '';
     final now = DateTime.now();
     final scored = all
@@ -108,7 +110,11 @@ class MemoryStore {
 
   /// 合并新抽取出来的事实：重复的只加权重，不新增行。
   /// 超出 [maxRows] 时按「重要度 × 新鲜度」淘汰分数最低的，而不是 FIFO。
-  Future<void> mergeFacts(Iterable<String> incoming, {int maxRows = 200}) async {
+  Future<void> mergeFacts(
+    Iterable<String> incoming, {
+    int maxRows = 200,
+    bool localOnly = false,
+  }) async {
     final existing = await facts();
     final now = DateTime.now().millisecondsSinceEpoch;
     for (final raw in incoming) {
@@ -129,6 +135,7 @@ class MemoryStore {
                 importance: const dr.Value(3),
                 firstSeen: now,
                 lastSeen: now,
+                localOnly: dr.Value(localOnly),
               ),
             );
         existing.add(await (db.select(db.facts)..where((f) => f.id.equals(id))).getSingle());
@@ -281,7 +288,7 @@ class MemoryStore {
     String? keyword,
     int k = 3,
     double threshold = 0.30,
-    bool includeLocalOnly = true,
+    bool includeLocalOnly = false,
     bool expand = true,
   }) async {
     final query = (keyword ?? '').trim();
@@ -450,7 +457,10 @@ class MemoryStore {
       if (buf.length + line.length > maxChars) break;
       buf.writeln(line);
     }
-    final todays = await episodes(fromMs: dayStartMs(now), limit: 4);
+    final todays = (await episodes(fromMs: dayStartMs(now), limit: 8))
+        .where((e) => !e.localOnly)
+        .take(4)
+        .toList();
     if (todays.isNotEmpty) {
       buf.writeln('今天我记下的：');
       for (final e in todays) {
@@ -680,6 +690,89 @@ class MemoryStore {
     } catch (_) {
       return '';
     }
+  }
+
+  /// 夜里做的收尾：让淡掉的星继续淡、断了的线失效、太旧的情景让位。
+  /// 不删星（人还在记忆里），只调强度和边。
+  Future<int> nightlySweep({DateTime? now}) async {
+    final at = now ?? DateTime.now();
+    var changed = 0;
+    try {
+      final stars = await entities(limit: 800);
+      for (final s in stars) {
+        final elapsed = at
+            .difference(DateTime.fromMillisecondsSinceEpoch(s.lastTouched))
+            .inHours;
+        if (elapsed < 24 * 7) continue;
+        final next = decayStrength(s.strength, Duration(hours: elapsed), tau: const Duration(days: 30));
+        if ((s.strength - next).abs() < 0.01) continue;
+        await (db.update(db.entities)..where((e) => e.id.equals(s.id))).write(
+          EntitiesCompanion(strength: dr.Value(next)),
+        );
+        changed++;
+      }
+
+      final staleEdgeCutoff = at.subtract(const Duration(days: 120)).millisecondsSinceEpoch;
+      final dead = await (db.select(db.edges)
+            ..where((e) =>
+                e.invalidatedAt.isNull() &
+                e.weight.isSmallerThanValue(0.25) &
+                e.lastSeen.isSmallerThanValue(staleEdgeCutoff))
+            ..limit(200))
+          .get();
+      for (final e in dead) {
+        await (db.update(db.edges)..where((row) => row.id.equals(e.id))).write(
+          EdgesCompanion(invalidatedAt: dr.Value(at.millisecondsSinceEpoch)),
+        );
+        changed++;
+      }
+
+      if (await episodeCount() > 4000) {
+        final old = await (db.select(db.episodes)
+              ..orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.asc)])
+              ..limit(500))
+            .get();
+        for (final e in old) {
+          await (db.delete(db.episodes)..where((row) => row.id.equals(e.id))).go();
+          changed++;
+        }
+      }
+    } catch (e) {
+      debugPrint('[feiyu] nightly sweep failed: $e');
+    }
+    return changed;
+  }
+
+  /// 导出：给用户一份能自己留档的 JSON。
+  Future<Map<String, dynamic>> exportSnapshot() async => <String, dynamic>{
+        'exportedAt': DateTime.now().toIso8601String(),
+        'facts': (await facts(includeInvalidated: true)).map((f) => f.toJson()).toList(),
+        'episodes': (await episodes(limit: 20000)).map((e) => e.toJson()).toList(),
+        'entities': (await entities(limit: 20000)).map((e) => e.toJson()).toList(),
+        'edges': (await edges(activeOnly: false, limit: 20000)).map((e) => e.toJson()).toList(),
+        'blocks': (await (db.select(db.blocks)
+                  ..orderBy([(b) => dr.OrderingTerm(expression: b.createdAt, mode: dr.OrderingMode.desc)])
+                  ..limit(20000))
+                .get())
+            .map((b) => b.toJson())
+            .toList(),
+      };
+
+  /// 清空：六张表全清，连带 SharedPreferences 里的旧 key 一起，不可撤销。
+  Future<void> wipe() async {
+    await db.transaction(() async {
+      await db.delete(db.edges).go();
+      await db.delete(db.entities).go();
+      await db.delete(db.blocks).go();
+      await db.delete(db.episodes).go();
+      await db.delete(db.facts).go();
+      await db.delete(db.metaRows).go();
+    });
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.remove('feiyu.memory.v1');
+      await sp.remove('feiyu.archive.v1');
+    } catch (_) {}
   }
 
   /// 记性体检：够不够厚、有没有打架的事实、哪些星快灭了。

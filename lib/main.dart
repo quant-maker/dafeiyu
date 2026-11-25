@@ -26,6 +26,8 @@ import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'memory/curator.dart';
 import 'memory/db.dart' show Fact;
+import 'memory/digest.dart' show looksSensitive;
+import 'memory/export.dart';
 import 'memory/galaxy_page.dart';
 import 'memory/health_page.dart';
 import 'memory/store.dart';
@@ -144,6 +146,9 @@ class Settings {
   String? avatar;
   String? userAvatar;
   bool memoryEnabled;
+
+  /// 敏感话题只存本机、不进 prompt、不外发。
+  bool privacyLocalOnly;
   bool proactiveEnabled;
   bool proactiveShareEnabled;
   bool sceneEnabled;
@@ -180,6 +185,7 @@ class Settings {
     this.avatar,
     this.userAvatar,
     this.memoryEnabled = true,
+    this.privacyLocalOnly = true,
     this.proactiveEnabled = false,
     this.proactiveShareEnabled = true,
     this.sceneEnabled = true,
@@ -240,6 +246,7 @@ class Settings {
       avatar: rawAvatar.isEmpty ? null : rawAvatar,
       userAvatar: rawUserAvatar.isEmpty ? null : rawUserAvatar,
       memoryEnabled: j['memoryEnabled'] as bool? ?? true,
+      privacyLocalOnly: j['privacyLocalOnly'] as bool? ?? true,
       proactiveEnabled: j['proactiveEnabled'] as bool? ?? false,
       proactiveShareEnabled: j['proactiveShareEnabled'] as bool? ?? true,
       sceneEnabled: j['sceneEnabled'] as bool? ?? true,
@@ -292,6 +299,7 @@ class Settings {
         if (userAvatar != null && userAvatar!.isNotEmpty)
           'userAvatar': userAvatar!,
         'memoryEnabled': memoryEnabled,
+        'privacyLocalOnly': privacyLocalOnly,
         'proactiveEnabled': proactiveEnabled,
         'proactiveShareEnabled': proactiveShareEnabled,
         'sceneEnabled': sceneEnabled,
@@ -2535,7 +2543,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           .where((l) => l.isNotEmpty && l != '无')
           .toList();
       if (lines.isEmpty) return;
-      await _store?.mergeFacts(lines);
+      await _store?.mergeFacts(lines, localOnly: looksSensitive(recent));
       await _reloadMemory();
     } catch (_) {}
   }
@@ -2718,6 +2726,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   /// 结账：把走完的日子折成日结，再往上折周/月。启动后跑一次，之后每天 23:10 一次。
   Future<void> _runMemoryMaintenance() async {
+    final store = _store;
+    if (store != null) {
+      try {
+        // 先让旧星褪色、剪掉废边、按需裁老情景，再结账，顺序不能反：
+        // 结账会把当天情景折进日结，裁掉的就再也折不进去了。
+        final swept = await store.nightlySweep();
+        if (swept > 0) debugPrint('[feiyu] nightly sweep touched $swept');
+      } catch (e) {
+        debugPrint('[feiyu] nightly sweep FAILED: $e');
+      }
+    }
     final c = _curator(_settings);
     if (c == null) return;
     try {
@@ -2755,14 +2774,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final curator = _curator(s);
     if (curator == null) return;
     try {
-      final added = await curator.extractEpisodes(turns, at: DateTime.now());
+      final sensitive = s.privacyLocalOnly && looksSensitive(slice.map((m) => m.content).join('\n'));
+      final added = await curator.extractEpisodes(turns, at: DateTime.now(), localOnly: sensitive);
       _summarized = _messages.length - 4;
       if (added > 0) {
-        debugPrint('[feiyu] extracted $added episodes');
+        debugPrint('[feiyu] extracted $added episodes${sensitive ? ' (local only)' : ''}');
         await _reloadMemory();
       }
-      final stars = await curator.extractGraph(turns, at: DateTime.now());
-      if (stars > 0) debugPrint('[feiyu] graph +$stars entities');
+      if (!sensitive) {
+        final stars = await curator.extractGraph(turns, at: DateTime.now());
+        if (stars > 0) debugPrint('[feiyu] graph +$stars entities');
+      }
     } catch (e) {
       debugPrint('[feiyu] summarize FAILED: $e');
     }
@@ -3082,8 +3104,10 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _model;
   late final TextEditingController _persona;
   late bool _memoryEnabled;
+  late bool _privacyLocalOnly;
   List<Fact> _facts = const [];
   int _stars = 0;
+  String? _exportHint;
   late bool _proactiveEnabled;
   late bool _proactiveShareEnabled;
   late bool _sceneEnabled;
@@ -3133,6 +3157,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _model = TextEditingController(text: widget.initial.model);
     _persona = TextEditingController(text: widget.initial.persona);
     _memoryEnabled = widget.initial.memoryEnabled;
+    _privacyLocalOnly = widget.initial.privacyLocalOnly;
     _facts = const [];
     unawaited(_loadFacts());
     _proactiveEnabled = widget.initial.proactiveEnabled;
@@ -3293,6 +3318,7 @@ class _SettingsPageState extends State<SettingsPage> {
       avatar: _avatar,
       userAvatar: _userAvatar,
       memoryEnabled: _memoryEnabled,
+      privacyLocalOnly: _privacyLocalOnly,
       proactiveEnabled: _proactiveEnabled,
       proactiveIdleMinutes: _proactiveIdleMinutes,
       proactiveShareEnabled: _proactiveShareEnabled,
@@ -3428,6 +3454,54 @@ class _SettingsPageState extends State<SettingsPage> {
       });
     } catch (e) {
       debugPrint('[feiyu] load facts FAILED: $e');
+    }
+  }
+
+  /// 把整库导成一个 JSON 文件，让用户自己留着。
+  Future<void> _exportMemory() async {
+    final store = widget.memory;
+    if (store == null) return;
+    try {
+      final snapshot = await store.exportSnapshot();
+      final json = const JsonEncoder.withIndent('  ').convert(snapshot);
+      final path = await saveMemoryExport(json);
+      if (!mounted) return;
+      setState(() => _exportHint = path == null ? '导出失败' : '已导出：$path');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _exportHint = '导出失败：$e');
+    }
+  }
+
+  /// 清空整库。这是不可逆操作，所以先问一遍。
+  Future<void> _wipeMemory() async {
+    final store = widget.memory;
+    if (store == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('清空全部记忆？'),
+        content: const Text('星图、日记、事实全部删掉，不能恢复。要留底就先导出。'),
+        actions: <Widget>[
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('算了')),
+          TextButton(
+            key: const ValueKey('settings-wipe-confirm'),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await store.wipe();
+      await widget.onMemoryChanged?.call();
+      await _loadFacts();
+      if (!mounted) return;
+      setState(() => _exportHint = '记忆已清空');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _exportHint = '清空失败：$e');
     }
   }
 
@@ -3943,6 +4017,13 @@ class _SettingsPageState extends State<SettingsPage> {
                 onChanged: (v) => setState(() => _memoryEnabled = v),
               ),
               const SizedBox(height: 6),
+              _SettingsSwitch(
+                key: const ValueKey('settings-privacy-local'),
+                title: '敏感的事只存本机',
+                subtitle: '碰到钱、证件、病历这类话题，这段记忆留在手机里，不发给模型',
+                value: _privacyLocalOnly,
+                onChanged: (v) => setState(() => _privacyLocalOnly = v),
+              ),
               InkWell(
                 key: const ValueKey('settings-open-galaxy'),
                 borderRadius: BorderRadius.circular(AppRadii.m),
@@ -4050,6 +4131,27 @@ class _SettingsPageState extends State<SettingsPage> {
                   label: const Text('添加一条记忆'),
                 ),
               ),
+              const SizedBox(height: 6),
+              Row(
+                children: <Widget>[
+                  TextButton.icon(
+                    key: const ValueKey('settings-export-memory'),
+                    onPressed: widget.memory == null ? null : _exportMemory,
+                    icon: const Icon(Icons.file_download_outlined, size: 16),
+                    label: const Text('导出记忆'),
+                  ),
+                  const SizedBox(width: AppSpacing.s),
+                  TextButton.icon(
+                    key: const ValueKey('settings-wipe-memory'),
+                    onPressed: widget.memory == null ? null : _wipeMemory,
+                    icon: const Icon(Icons.delete_forever_outlined, size: 16),
+                    label: const Text('清空记忆'),
+                    style: TextButton.styleFrom(foregroundColor: AppPalette.danger),
+                  ),
+                ],
+              ),
+              if (_exportHint != null)
+                Text(_exportHint!, style: AppType.caption.copyWith(color: AppPalette.text3)),
               const SizedBox(height: 14),
               _SettingsSwitch(
                 title: '主动开口',
@@ -4430,6 +4532,7 @@ class _AvatarSettingsBlock extends StatelessWidget {
 
 class _SettingsSwitch extends StatelessWidget {
   const _SettingsSwitch({
+    super.key,
     required this.title,
     required this.subtitle,
     required this.value,

@@ -65,6 +65,7 @@ class MemoryCurator {
     DateTime? at,
     int maxPerChunk = 3,
     int importanceFallback = 3,
+    bool localOnly = false,
   }) async {
     final fn = chat;
     if (fn == null) return 0;
@@ -109,6 +110,7 @@ class MemoryCurator {
         body: body,
         vector: vec,
         importance: d.importance == 3 ? importanceFallback : d.importance,
+        localOnly: localOnly,
       );
       if (ok > 0) added++;
     }
@@ -191,7 +193,11 @@ class MemoryCurator {
 
   /// 返回是否还能继续往上折（同一轮里刚熬出的日结不参与周结，避免半成品）。
   Future<bool> _foldDays(MemoryChat fn, DateTime now, MaintenanceReport report) async {
-    final all = await store.episodes(limit: 5000);
+    // 只许把「可以外发」的情景折成日结：标了 localOnly 的只在手机里躺着，
+    // 一旦进日结就会被当成 prompt 的一部分发给网关。
+    final all = (await store.episodes(limit: 5000))
+        .where((e) => !e.localOnly)
+        .toList();
     if (all.isEmpty) return true;
     final byDay = <String, List<Episode>>{};
     for (final e in all) {

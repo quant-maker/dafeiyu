@@ -194,3 +194,46 @@ String _autoTitle(String body) {
   final t = firstLine.isEmpty ? body.trim() : firstLine;
   return t.length <= 14 ? t : t.substring(0, 14);
 }
+
+/// 看着像隐私的线索词。命中就把这段记忆标成「只存本机、不进 prompt」。
+///
+/// 宁可多标一点也不漏：标错了最多是这条不参与对话，标漏了就是外发。
+const List<String> sensitiveMarkers = <String>[
+  '密码',
+  '口令',
+  '身份证',
+  '护照号',
+  '银行卡',
+  '卡号',
+  '信用卡',
+  '工资',
+  '薪水',
+  '月薪',
+  '年薪',
+  '存款',
+  '余额',
+  '房贷',
+  '欠款',
+  '借条',
+  '病历',
+  '诊断',
+  '处方',
+  '抑郁',
+  '焦虑症',
+  '自杀',
+  '出轨',
+  '离婚',
+  '手机号',
+  '住址',
+  '验证码',
+];
+
+/// 这段文本里有没有敏感话题。
+bool looksSensitive(String text) {
+  final t = text.trim();
+  if (t.isEmpty) return false;
+  for (final m in sensitiveMarkers) {
+    if (t.contains(m)) return true;
+  }
+  return false;
+}
