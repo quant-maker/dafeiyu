@@ -59,8 +59,12 @@ class MemoryCurator {
 
   // -------------------------------------------------------------- 情景抽取
 
-  /// 把一段对话抽成 0–[maxPerChunk] 条情景，返回新增条数。
-  Future<int> extractEpisodes(
+  /// 把一段对话抽成 0–[maxPerChunk] 条情景，返回新落库的情景 id。
+  ///
+  /// 模型调用失败时返回 `null`，而不是空列表：调用方要能区分「这段没有值得记的」
+  /// 和「这次没抽成」，后者不能前移摘要游标，否则这段对话就永远丢了。
+  /// 返回 id 还有个用处：紧跟其后的星图抽取可以把边挂到具体情景上（证据）。
+  Future<List<int>?> extractEpisodes(
     List<TranscriptTurn> turns, {
     DateTime? at,
     int maxPerChunk = 3,
@@ -68,14 +72,14 @@ class MemoryCurator {
     bool localOnly = false,
   }) async {
     final fn = chat;
-    if (fn == null) return 0;
+    if (fn == null) return const <int>[];
     final clean = turns
         .map((t) => TranscriptTurn(fromUser: t.fromUser, text: t.text.trim()))
         .where((t) => t.text.isNotEmpty)
         .toList();
-    if (clean.isEmpty) return 0;
+    if (clean.isEmpty) return const <int>[];
     final transcript = clean.map((t) => t.render()).join('\n');
-    if (transcript.length < 40) return 0;
+    if (transcript.length < 40) return const <int>[];
 
     final when = at ?? DateTime.now();
     List<EpisodeDraft> drafts;
@@ -83,13 +87,13 @@ class MemoryCurator {
       final raw = await fn(episodeExtractionPrompt(transcript));
       drafts = parseEpisodeDrafts(raw);
     } catch (_) {
-      return 0;
+      return null;
     }
-    if (drafts.isEmpty) return 0;
+    if (drafts.isEmpty) return const <int>[];
 
     final from = dayStartMs(when);
     final to = from + const Duration(days: 1).inMilliseconds;
-    var added = 0;
+    final added = <int>[];
     for (final d in drafts.take(maxPerChunk)) {
       final body = d.body.trim();
       if (body.isEmpty) continue;
@@ -104,7 +108,7 @@ class MemoryCurator {
           // 向量失败不影响落库。
         }
       }
-      final ok = await store.addEpisode(
+      final id = await store.addEpisode(
         at: when,
         title: d.title,
         body: body,
@@ -112,7 +116,7 @@ class MemoryCurator {
         importance: d.importance == 3 ? importanceFallback : d.importance,
         localOnly: localOnly,
       );
-      if (ok > 0) added++;
+      if (id > 0) added.add(id);
     }
     return added;
   }
@@ -191,7 +195,8 @@ class MemoryCurator {
     return report;
   }
 
-  /// 返回是否还能继续往上折（同一轮里刚熬出的日结不参与周结，避免半成品）。
+  /// 返回是否还能继续往上折（这一轮被日结上限截断时先不折周结，
+  /// 否则剩下那几天以后再也进不了周结）。
   Future<bool> _foldDays(MemoryChat fn, DateTime now, MaintenanceReport report) async {
     // 只许把「可以外发」的情景折成日结：标了 localOnly 的只在手机里躺着，
     // 一旦进日结就会被当成 prompt 的一部分发给网关。
@@ -231,7 +236,8 @@ class MemoryCurator {
       made++;
       report.dayCards++;
     }
-    return true;
+    // 还有没折完的天就先别往上折：周结只折一次，提前结账会永久漏掉后补的那几天。
+    return !report.truncated;
   }
 
   Future<void> _foldWeeks(MemoryChat fn, DateTime now, MaintenanceReport report) async {
@@ -244,16 +250,27 @@ class MemoryCurator {
       if (day == null) continue;
       groups.putIfAbsent(weekKey(day), () => []).add(b);
     }
+    // 有情景、却还没折成日结的那几天，所在的周先挂起。
+    final doneDays = await store.blockTopics(1);
+    final pendingWeeks = <String>{};
+    for (final e in await store.episodes(limit: 5000)) {
+      if (e.localOnly) continue;
+      final key = dayKey(DateTime.fromMillisecondsSinceEpoch(e.at));
+      if (doneDays.contains('day:$key')) continue;
+      final day = parseDayKey(key);
+      if (day != null) pendingWeeks.add(weekKey(day));
+    }
     final done = await store.blockTopics(2);
     var made = 0;
     for (final entry in groups.entries) {
       if (made >= 2) break;
       final key = entry.key;
       if (done.contains('week:$key')) continue;
+      if (pendingWeeks.contains(key)) continue;
       final blocks = entry.value;
       final firstDay = _firstSpan(blocks);
       if (firstDay == null) continue;
-      if (blocks.length < 5 && !isWeekComplete(firstDay, now)) continue;
+      if (!isWeekComplete(firstDay, now)) continue;
       final cards = _orderedSummaries(blocks);
       final summary = cleanModelText(await fn(rollupPrompt(label: weekLabel(key), level: '周', cards: cards)));
       if (summary.isEmpty) continue;
@@ -281,14 +298,26 @@ class MemoryCurator {
       final month = day == null ? key.substring(0, key.length.clamp(0, 7)) : monthKey(day);
       groups.putIfAbsent(month, () => []).add(b);
     }
+    // 有日结、却还没折成周结的周，所在的月先挂起，等周结补齐再折月。
+    final doneWeeks = await store.blockTopics(2);
+    final pendingMonths = <String>{};
+    for (final b in await store.blocksOfTier(1, limit: 1000)) {
+      final key = b.topic?.replaceFirst('day:', '') ?? '';
+      final day = parseDayKey(key);
+      if (day == null) continue;
+      if (doneWeeks.contains('week:${weekKey(day)}')) continue;
+      final at = b.spanFrom ?? b.createdAt;
+      pendingMonths.add(monthKey(DateTime.fromMillisecondsSinceEpoch(at)));
+    }
     final done = await store.blockTopics(3);
     for (final entry in groups.entries) {
       final key = entry.key;
       if (done.contains('month:$key')) continue;
+      if (pendingMonths.contains(key)) continue;
       final blocks = entry.value;
       final firstDay = _firstSpan(blocks);
       if (firstDay == null) continue;
-      if (blocks.length < 3 && !isMonthComplete(firstDay, now)) continue;
+      if (!isMonthComplete(firstDay, now)) continue;
       final cards = _orderedSummaries(blocks);
       final summary = cleanModelText(await fn(rollupPrompt(label: monthLabel(key), level: '月', cards: cards)));
       if (summary.isEmpty) continue;

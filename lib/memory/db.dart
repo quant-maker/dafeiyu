@@ -117,29 +117,48 @@ class MemoryDb extends _$MemoryDb {
         },
         beforeOpen: (details) async {
           await customStatement('PRAGMA foreign_keys = ON');
+          // 老库可能是「同一 schemaVersion、但还没有 FTS」的版本：启动时补建，
+          // 新建的索引第一次要从 episodes 回填，不然关键词检索会一直是空的。
+          await _createFts();
         },
       );
 
   /// 全文索引。trigram 对中文友好（unicode61 会把整句当一个词）。
   /// 老版本 SQLite 没有 trigram 时退化为普通 FTS5，再不行就放弃并留下标记。
   Future<void> _createFts() async {
+    var existed = false;
+    try {
+      final rows = await customSelect(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'episode_fts'",
+      ).get();
+      existed = rows.isNotEmpty;
+    } catch (_) {}
     try {
       await customStatement(
         "CREATE VIRTUAL TABLE IF NOT EXISTS episode_fts USING fts5("
         "title, body, content='episodes', content_rowid='id', tokenize='trigram')",
       );
       await _createFtsTriggers();
+      if (!existed) await _rebuildFts();
+      return;
+    } catch (_) {}
+    try {
+      await customStatement(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS episode_fts USING fts5("
+        "title, body, content='episodes', content_rowid='id')",
+      );
+      await _createFtsTriggers();
+      if (!existed) await _rebuildFts();
     } catch (_) {
-      try {
-        await customStatement(
-          "CREATE VIRTUAL TABLE IF NOT EXISTS episode_fts USING fts5("
-          "title, body, content='episodes', content_rowid='id')",
-        );
-        await _createFtsTriggers();
-      } catch (_) {
-        // 没有 FTS 也能用：检索退化为 LIKE + 向量。
-      }
+      // 没有 FTS 也能用：检索退化为 LIKE + 向量。
     }
+  }
+
+  /// 外部内容表第一次建好后，把已有情景灌进索引。
+  Future<void> _rebuildFts() async {
+    try {
+      await customStatement("INSERT INTO episode_fts(episode_fts) VALUES('rebuild')");
+    } catch (_) {}
   }
 
   Future<void> _createFtsTriggers() async {

@@ -58,6 +58,19 @@ double cosine(List<double> a, List<double> b) {
 /// 仍保留绝大部分方向信息（MRL），存储从 10KB/条 降到 1KB/条。
 const int kVectorDims = 1024;
 
+/// 把向量缩放到单位长度。int8 量化假定分量落在 [-1,1]；不是所有 embedding
+/// 端点都返回归一化向量（有的范数是几十），不先归一化就会被 127 截断丢方向。
+/// 余弦本身对缩放不变，所以这步只影响精度，不影响排序语义。
+List<double> unitVector(List<double> v) {
+  var norm = 0.0;
+  for (final x in v) {
+    norm += x * x;
+  }
+  if (norm <= 1e-12) return v;
+  final s = 1.0 / math.sqrt(norm);
+  return <double>[for (final x in v) x * s];
+}
+
 /// 把 [List<double>] 压成 int8：截断到 [dims] 维后按最大值缩放。
 /// 归一化向量的分量都在 [-1,1]，固定尺度 127 即可，省掉每条的 scale。
 Uint8List quantizeVector(List<double> v, {int dims = kVectorDims}) {

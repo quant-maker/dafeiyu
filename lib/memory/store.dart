@@ -71,9 +71,17 @@ class MemoryStore {
     var used = 0;
     for (final e in scored) {
       final line = '- ${e.key.content}';
-      if (used + line.length > maxChars) break;
-      lines.add(line);
-      used += line.length + 1;
+      if (used + line.length <= maxChars) {
+        lines.add(line);
+        used += line.length + 1;
+        continue;
+      }
+      // 一条超长的事实跳过就好，别让它在预算边缘把后面短的全挤掉。
+      if (used == 0 && maxChars > 8) {
+        lines.add('${line.substring(0, maxChars - 2)}…');
+        used = maxChars;
+        break;
+      }
     }
     if (lines.isEmpty) return '';
     return '你记得关于主人的这些事（长期记忆，自然使用，不要逐条复述）：\n${lines.join('\n')}';
@@ -177,6 +185,8 @@ class MemoryStore {
             hitCount: dr.Value(hit.hitCount + 1),
             lastSeen: dr.Value(now),
             importance: dr.Value((hit.importance + 1).clamp(1, 5)),
+            // 旧条目第一次被标成敏感时也要落库，否则它还会从 prompt 里漏出去。
+            localOnly: dr.Value(hit.localOnly || localOnly),
             // 旧的纯文本条目第一次拿到结构时补上，已有的不覆盖。
             subject: hit.subject == null ? dr.Value(_clean(draft.subject)) : const dr.Value.absent(),
             predicate: hit.predicate == null ? dr.Value(_clean(draft.predicate)) : const dr.Value.absent(),
@@ -201,15 +211,19 @@ class MemoryStore {
       });
     final drop = all.length - maxRows;
     for (var i = 0; i < drop; i++) {
-      await deleteFact(ranked[i].id);
+      // 只标失效，不 DELETE：事实是可以被「翻案」的，删了就再也导不出来。
+      await invalidateFact(ranked[i].id, at: now);
     }
   }
 
   // ---------------------------------------------------------------- 情景
 
-  Future<int> episodeCount() async {
+  /// 情景条数。默认只数还在参与回忆的（weight > 0）；被扫进冷宫的不算。
+  Future<int> episodeCount({bool includeArchived = false}) async {
     final c = db.episodes.id.count();
-    final row = await (db.selectOnly(db.episodes)..addColumns([c])).getSingle();
+    final q = db.selectOnly(db.episodes)..addColumns([c]);
+    if (!includeArchived) q.where(db.episodes.weight.isBiggerThanValue(0));
+    final row = await q.getSingle();
     return row.read(c) ?? 0;
   }
 
@@ -228,7 +242,7 @@ class MemoryStore {
     final text = body.trim();
     if (text.isEmpty) return 0;
     final when = at ?? DateTime.now();
-    final vec = (vector == null || vector.isEmpty) ? null : quantizeVector(vector);
+    final vec = (vector == null || vector.isEmpty) ? null : quantizeVector(unitVector(vector));
     return db.into(db.episodes).insert(
           EpisodesCompanion.insert(
             at: when.millisecondsSinceEpoch,
@@ -248,11 +262,15 @@ class MemoryStore {
   }
 
   /// 今天的最后 [count] 条摘要，常驻在 prompt 里。
+  /// 敏感（localOnly）和被扫进冷宫的不进来：前者不许外发，后者已经没有回忆价值。
   Future<String> recentDigest({DateTime? now, int count = 2}) async {
     final n = now ?? DateTime.now();
     final start = DateTime(n.year, n.month, n.day).millisecondsSinceEpoch;
     final rows = await (db.select(db.episodes)
-          ..where((e) => e.at.isBiggerOrEqualValue(start))
+          ..where((e) =>
+              e.at.isBiggerOrEqualValue(start) &
+              e.localOnly.equals(false) &
+              e.weight.isBiggerThanValue(0))
           ..orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.asc)]))
         .get();
     if (rows.isEmpty) return '';
@@ -272,7 +290,9 @@ class MemoryStore {
         ).get();
         final ids = rows.map((r) => r.read<int>('id')).toList();
         if (ids.isNotEmpty) {
-          final list = await (db.select(db.episodes)..where((e) => e.id.isIn(ids))).get();
+          final list = await (db.select(db.episodes)
+                ..where((e) => e.id.isIn(ids) & e.weight.isBiggerThanValue(0)))
+              .get();
           if (list.isNotEmpty) return list;
         }
       } catch (_) {
@@ -280,7 +300,9 @@ class MemoryStore {
       }
     }
     return (db.select(db.episodes)
-          ..where((e) => e.title.like('%$q%') | e.body.like('%$q%'))
+          ..where((e) =>
+              (e.title.like('%$q%') | e.body.like('%$q%')) &
+              e.weight.isBiggerThanValue(0))
           ..orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.desc)])
           ..limit(limit))
         .get();
@@ -328,23 +350,28 @@ class MemoryStore {
     bool expand = true,
   }) async {
     final query = (keyword ?? '').trim();
-    final qv = (vector == null || vector.isEmpty) ? null : quantizeVector(vector);
+    final qv = (vector == null || vector.isEmpty) ? null : quantizeVector(unitVector(vector));
 
-    // 候选：有关键词就先用 FTS/LIKE 圈一批，否则全取（手机上量不会太大）。
+    // 候选：有关键词就先用 FTS/LIKE 圈一批，命中太少时再补最近的；
+    // 注意是「补」不是「换」——整批换掉会把刚命中的旧记忆丢掉。
+    Future<List<Episode>> recentPool() {
+      return (db.select(db.episodes)
+            ..where((e) => e.weight.isBiggerThanValue(0))
+            ..orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.desc)])
+            ..limit(2000))
+          .get();
+    }
+
     List<Episode> pool;
     if (query.isNotEmpty) {
       pool = await _keywordCandidates(query);
       if (pool.length < 5) {
-        pool = await (db.select(db.episodes)
-              ..orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.desc)])
-              ..limit(2000))
-            .get();
+        final known = pool.map((e) => e.id).toSet();
+        final more = await recentPool();
+        pool = <Episode>[...pool, ...more.where((e) => !known.contains(e.id))];
       }
     } else {
-      pool = await (db.select(db.episodes)
-            ..orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.desc)])
-            ..limit(2000))
-        .get();
+      pool = await recentPool();
     }
     if (pool.isEmpty) return const [];
 
@@ -384,7 +411,9 @@ class MemoryStore {
     final missing = boost.keys.where((id) => !seen.contains(id)).toList();
     final extra = <MapEntry<Episode, double>>[];
     if (missing.isNotEmpty) {
-      final rows = await (db.select(db.episodes)..where((e) => e.id.isIn(missing))).get();
+      final rows = await (db.select(db.episodes)
+            ..where((e) => e.id.isIn(missing) & e.weight.isBiggerThanValue(0)))
+          .get();
       for (final e in rows) {
         if (!includeLocalOnly && e.localOnly) continue;
         final rec = recencyScore(DateTime.fromMillisecondsSinceEpoch(e.at), now);
@@ -409,10 +438,17 @@ class MemoryStore {
   ///
   /// [limit] 限定的是「最近多少条」而不是「最早多少条」：库里超过上限时，
   /// 先丢的应该是陈年旧账，不是今天的对话。取完再翻回正序，调用方不用关心。
-  Future<List<Episode>> episodes({int limit = 5000, int? fromMs, int? toMs}) async {
+  Future<List<Episode>> episodes({
+    int limit = 5000,
+    int? fromMs,
+    int? toMs,
+    bool includeArchived = false,
+  }) async {
     final q = db.select(db.episodes);
     if (fromMs != null) q.where((e) => e.at.isBiggerOrEqualValue(fromMs));
     if (toMs != null) q.where((e) => e.at.isSmallerThanValue(toMs));
+    // 冷宫里的情景（weight = 0）不再参与回忆，但数据和谱系都还在。
+    if (!includeArchived) q.where((e) => e.weight.isBiggerThanValue(0));
     q.orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.desc)]);
     q.limit(limit);
     final rows = await q.get();
@@ -797,9 +833,11 @@ class MemoryStore {
       final now = DateTime.now();
 
       final legacyFacts = sp.getStringList('feiyu.memory.v1') ?? const <String>[];
+      // 标记是最后写的：迁移中途崩了会重跑，所以插入前先去重，别把旧事实复制两遍。
+      final existingFacts = (await facts()).map((f) => f.content).toSet();
       for (final f in legacyFacts) {
         final t = f.trim();
-        if (t.isEmpty) continue;
+        if (t.isEmpty || !existingFacts.add(t)) continue;
         await db.into(db.facts).insert(
               FactsCompanion.insert(
                 content: t,
@@ -821,8 +859,11 @@ class MemoryStore {
             final vec = ((m['v'] ?? const <dynamic>[]) as List)
                 .map((e) => (e as num).toDouble())
                 .toList();
+            final at = DateTime.tryParse(day) ?? now;
+            final from = dayStartMs(at);
+            if (await hasSimilarEpisode(text, fromMs: from, toMs: from + 86400000)) continue;
             await addEpisode(
-              at: DateTime.tryParse(day) ?? now,
+              at: at,
               body: text,
               vector: vec.isEmpty ? null : vec,
               importance: 3,
@@ -905,13 +946,18 @@ class MemoryStore {
         changed++;
       }
 
+      // 太旧的情景不删，只把 weight 打到 0（冷宫）：不再进 prompt / 检索，
+      // 但数据和块谱系都还在，导出也能带走。
       if (await episodeCount() > 4000) {
         final old = await (db.select(db.episodes)
+              ..where((e) => e.weight.isBiggerThanValue(0))
               ..orderBy([(e) => dr.OrderingTerm(expression: e.at, mode: dr.OrderingMode.asc)])
               ..limit(500))
             .get();
         for (final e in old) {
-          await (db.delete(db.episodes)..where((row) => row.id.equals(e.id))).go();
+          await (db.update(db.episodes)..where((row) => row.id.equals(e.id))).write(
+            const EpisodesCompanion(weight: dr.Value(0.0)),
+          );
           changed++;
         }
       }
@@ -925,7 +971,7 @@ class MemoryStore {
   Future<Map<String, dynamic>> exportSnapshot() async => <String, dynamic>{
         'exportedAt': DateTime.now().toIso8601String(),
         'facts': (await facts(includeInvalidated: true)).map((f) => f.toJson()).toList(),
-        'episodes': (await episodes(limit: 20000)).map((e) => e.toJson()).toList(),
+        'episodes': (await episodes(limit: 20000, includeArchived: true)).map((e) => e.toJson()).toList(),
         'entities': (await entities(limit: 20000)).map((e) => e.toJson()).toList(),
         'edges': (await edges(activeOnly: false, limit: 20000)).map((e) => e.toJson()).toList(),
         'blocks': (await (db.select(db.blocks)

@@ -295,7 +295,25 @@ P0 已完成（代码在 `lib/memory/`）：
 
 1. **日结是「只增不改」的**：某天的日结写下去就不再重写，之后那天的情景也只能追加到更上层的周结里。理由同 billion-context——重写历史会让「同一件事被反复概述」而越来越糊。
 2. **一轮最多熬 3 篇日结**（`maxDayCardsPerRun`）：首次启用时库里可能压着几十天，一口气全熬会连打几十次模型调用，既慢又费钱，所以宁可分几晚慢慢补。
-3. **`local_only` 是硬隔离，不是提示词里的自觉**：`factsPrompt`、`timelinePrompt`、`curator._foldDays`、`search(includeLocalOnly:)` 四处都真的把它们过滤掉了。敏感情景不进日结，因为日结会被当成 prompt 外发；不进星图，因为星图里的 summary 会进「让她讲这件」。
+3. **`local_only` 是硬隔离，不是提示词里的自觉**：`factsPrompt`、`recentDigest`、`timelinePrompt`、`curator._foldDays`、`search(includeLocalOnly:)` 五处都真的把它们过滤掉了。敏感情景不进日结，因为日结会被当成 prompt 外发；不进星图，因为星图里的 summary 会进「让她讲这件」。
 4. **敏感判定是关键词表**（`digest.dart` 的 `sensitiveMarkers`），不是模型判断。宁可多标：标错只是这条不参与对话，标漏就是外发。
-5. **夜间整理先褪色再结账**：`nightlySweep()` 在 `runMaintenance()` 之前跑，否则刚被裁掉的老情景就再也折不进日结了。
+5. **先结账再夜间整理**：`runMaintenance()` 在 `nightlySweep()` 之前跑——清扫会把太老的情景打进冷宫（`weight = 0`），先扫的话它们就再也折不进日结了。
+
+6. **摘要游标是落盘的**（`feiyu.digest.cursor`，2026-11-25 修）：之前只存在内存里，重启后会把恢复出来的近 200 条历史整段重抽一遍，而且统一盖成「今天」的时间戳。现在启动时把游标夹到历史长度内（旧版本升上来的、没有游标的存档，只留最近 20 条走一遍），抽取失败（`extractEpisodes` 返回 `null`）时**不前移**，一次最多喂 40 条 / 6000 字，用这段对话最后一条消息的时间做锚点，不再用 `DateTime.now()`。
+
+7. **「新会话」不再是一键硬删**：先把旧列表写进 `feiyu.history.archive`（超配额时退成不含图片的纯文本），确认后才清空；提示条里 10 秒内可撤销。启动加载历史改成「磁盘历史 + 加载期间新消息」按时间去重合并，不会再 `clear()` 掉刚发的消息。
+
+8. **历史写入串行化**：`ChatStore` 的所有写（历史 + 游标）排在同一条队列上，旧快照不会后落盘覆盖新状态；web localStorage 装不下时先丢内联图片，保住正文。
+
+9. **周期结账要等下属周期补齐**（2026-11-25 修）：`_foldDays` 被 `maxDayCardsPerRun` 截断时返回 `false`，当轮不折周结；`_foldWeeks` 会跳过「还有天有情景却没日结」的周；`_foldMonths` 会跳过「还有日结却没周结」的月。以前 `truncated` 被忽略、周结看到 5 个日结就提前结账，剩下那几天永远进不了周/月结。
+
+10. **不再硬删**（2026-11-25 修）：事实淘汰改成 `invalidatedAt`（可翻案、导出里还在），情景超 4000 只把 `weight` 打到 0 进冷宫——`episodes()` 默认过滤，`search` / `recentDigest` / `timelinePrompt` / 日结都看不到，但数据和块的 `effectiveIds` 谱系都保留。
+
+11. **星图有了证据**：`extractEpisodes` 现在返回新落库的情景 id，`extractGraph(episodeId:)` 写进 `edges.evidence_episode`，`_graphBoost` 的一跳扩展终于有种子（之前两处调用都没传，永远是 NULL）。
+
+12. **检索候选是「补」不是「换」**：关键词命中 < 5 时只追加最近的，不再整批替换成最新 2000 条；老库启动时在 `beforeOpen` 里补建 FTS（存在则不重建），新建索引会 `rebuild` 回填一次。
+
+13. **启动维护等两边就绪**：`_bootMemoryOnce()` 要求 `_settings` 和 `_store` 都拿到才跑，设置读坏回退默认值时也会补跑一次；`_digest` 跟 `memoryEnabled` 一起开关。
+
+14. **导出带上聊天记录**：`chat` / `chatArchive` / `chatCount` 三个字段。设置页另加了「恢复上次清空的对话」（合并存档，撤销条过期后也能找回）。整份 JSON 的导入还没做——要么加文件选择器，要么在设置页贴 JSON，得先定「合并还是覆盖」。
 

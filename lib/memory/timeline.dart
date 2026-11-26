@@ -76,16 +76,22 @@ String dayLabel(String key) {
   return '${d.month}月${d.day}日';
 }
 
-/// 周标签：`11月24日那周`
-String weekLabel(String key) {
+/// `2026-W48` → 那一周的周一（本地时区）。
+DateTime? weekStartFromKey(String key) {
   final m = RegExp(r'^(\d{4})-W(\d{2})$').firstMatch(key.trim());
-  if (m == null) return key;
+  if (m == null) return null;
   final year = int.parse(m.group(1)!);
   final week = int.parse(m.group(2)!);
+  if (week < 1 || week > 53) return null;
   // 该年 1 月 4 日必在第一周。
-  final jan4 = DateTime(year, 1, 4);
-  final firstMonday = weekStart(jan4);
-  final monday = firstMonday.add(Duration(days: (week - 1) * 7));
+  final firstMonday = weekStart(DateTime(year, 1, 4));
+  return firstMonday.add(Duration(days: (week - 1) * 7));
+}
+
+/// 周标签：`11月24日那周`
+String weekLabel(String key) {
+  final monday = weekStartFromKey(key);
+  if (monday == null) return key;
   return '${monday.month}月${monday.day}日那周';
 }
 
