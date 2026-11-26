@@ -413,7 +413,12 @@ Map<String, dynamic> patchWorkflow(
     final target = wf[nodeId];
     if (target is! Map) return;
     final tInputs = target['inputs'];
-    if (tInputs is Map) tInputs['text'] = text;
+    if (tInputs is! Map) return;
+    // The negative input isn't always a CLIPTextEncode: Z-Image zeroes it out
+    // (ConditioningZeroOut), and injecting a stray `text` key then makes
+    // ComfyUI's validation unhappy. Only touch nodes that take text.
+    if (!tInputs.containsKey('text')) return;
+    tInputs['text'] = text;
   }
 
   applyText('positive', prompt);

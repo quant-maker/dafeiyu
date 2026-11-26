@@ -20,6 +20,9 @@ import 'companion/initiative.dart';
 import 'companion/initiative_budget.dart';
 import 'comfy/comfy.dart';
 import 'comfy/comfy_page.dart';
+import 'comfy/engine.dart';
+import 'comfy/prompt.dart';
+import 'comfy/workflows.dart';
 import 'feeds/footprints.dart';
 import 'providers.dart';
 import 'feeds/footprints_page.dart';
@@ -96,16 +99,6 @@ const kComfyImg2ImgWorkflow = r"""{
   "7": {"class_type": "KSampler", "inputs": {"seed": 1, "steps": 3, "cfg": 1.0, "sampler_name": "euler", "scheduler": "normal", "denoise": 0.55, "model": ["4", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["3", 0]}},
   "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["4", 2]}},
   "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "feiyu_edit"}}
-}""";
-
-const kComfySdTurboWorkflow = r"""{
-  "3": {"class_type": "KSampler", "inputs": {"seed": 1, "steps": 2, "cfg": 1.0, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
-  "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "sd_turbo.safetensors"}},
-  "5": {"class_type": "EmptyLatentImage", "inputs": {"width": 512, "height": 512, "batch_size": 1}},
-  "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}},
-  "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}},
-  "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
-  "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "feiyu"}}
 }""";
 
 class AsrPreset {
@@ -192,7 +185,9 @@ class Settings {
     this.sceneDim = .42,
     this.sceneImage = '',
     this.comfyUrl = 'http://192.168.1.10:8188',
-    this.comfyWorkflow = '',
+    // Ship a working default so 画画 isn't dead on first run; settings can
+    // switch to Z-Image Turbo (or paste a custom JSON) at any time.
+    this.comfyWorkflow = kComfySdTurboWorkflow,
     this.comfyWorkflowRemoveBg = '',
     this.comfyWorkflowEdit = '',
     this.embeddingModel = 'Qwen/Qwen3-Embedding-4B',
@@ -253,7 +248,11 @@ class Settings {
       sceneDim: (j['sceneDim'] as num?)?.toDouble() ?? .42,
       sceneImage: (j['sceneImage'] ?? '') as String? ?? '',
       comfyUrl: pick(j['comfyUrl'] as String?, 'http://192.168.1.10:8188'),
-      comfyWorkflow: (j['comfyWorkflow'] ?? '') as String? ?? '',
+      comfyWorkflow: comfyWorkflowUpgrade(
+        (j['comfyWorkflow'] as String? ?? '').trim().isEmpty
+            ? kComfySdTurboWorkflow
+            : (j['comfyWorkflow'] as String),
+      ),
       comfyWorkflowRemoveBg: (j['comfyWorkflowRemoveBg'] ?? '') as String? ?? '',
       comfyWorkflowEdit: (j['comfyWorkflowEdit'] ?? '') as String? ?? '',
       embeddingModel: pick(j['embeddingModel'] as String?, 'Qwen/Qwen3-Embedding-4B'),
@@ -426,11 +425,11 @@ class Message {
     };
   }
 
-  Map<String, dynamic> toStore() => {
+  Map<String, dynamic> toStore({bool withImage = true}) => {
         'role': role,
         'content': content,
         'at': at.toIso8601String(),
-        if (imageBase64 != null) 'img': imageBase64,
+        if (withImage && imageBase64 != null) 'img': imageBase64,
       };
 
   static Message fromStore(Map<String, dynamic> j) => Message(
@@ -442,12 +441,40 @@ class Message {
 }
 
 /// Conversation history that survives restarts.
+///
+/// 写入统一走 [_tail] 串行化：先前发起、但更晚落盘的旧快照不可能覆盖新状态
+/// （「清空后旧对话又冒出来」就是这么来的）。web 端底层是 5MB 的 localStorage，
+/// 整包塞不下时退成不带图片的纯文本，而不是整段历史静默丢失。
 class ChatStore {
   static const _k = 'feiyu.history.v2';
+  static const _archiveKey = 'feiyu.history.archive';
+  static const _cursorKey = 'feiyu.digest.cursor';
+  static const int _maxMessages = 200;
 
-  static Future<List<Message>> load() async {
-    final sp = await SharedPreferences.getInstance();
-    final raw = sp.getStringList(_k) ?? const [];
+  /// 所有写入（历史 + 摘要游标）按调用顺序排队。
+  static Future<void> _tail = Future<void>.value();
+
+  static Future<T> _serial<T>(Future<T> Function() action) {
+    final run = _tail.then((_) => action());
+    _tail = run.then<void>(
+      (_) {},
+      onError: (Object e, StackTrace st) {
+        debugPrint('[feiyu] history write failed: $e');
+      },
+    );
+    return run;
+  }
+
+  static List<String> _encode(List<Message> messages, {required bool withImage}) => messages
+      .where((m) => m.content.trim().isNotEmpty || m.imageBase64 != null)
+      .map((m) => jsonEncode(m.toStore(withImage: withImage)))
+      .toList();
+
+  static List<Message> _keepLast(List<Message> messages) => messages.length > _maxMessages
+      ? messages.sublist(messages.length - _maxMessages)
+      : messages;
+
+  static List<Message> _decode(List<String> raw) {
     final out = <Message>[];
     for (final line in raw) {
       try {
@@ -457,14 +484,96 @@ class ChatStore {
     return out;
   }
 
-  static Future<void> save(List<Message> messages) async {
+  static Future<List<Message>> load() async {
     final sp = await SharedPreferences.getInstance();
-    final keep = messages.length > 200 ? messages.sublist(messages.length - 200) : messages;
-    final lines = keep
-        .where((m) => m.content.trim().isNotEmpty || m.imageBase64 != null)
-        .map((m) => jsonEncode(m.toStore()))
-        .toList();
-    await sp.setStringList(_k, lines);
+    return _decode(sp.getStringList(_k) ?? const []);
+  }
+
+  /// 把当前对话写一份存档，供「清空」后撤销或手工找回。
+  static Future<void> archive(List<Message> messages) async {
+    final keep = _keepLast(messages);
+    final full = _encode(keep, withImage: true);
+    if (full.isEmpty) return;
+    final sp = await SharedPreferences.getInstance();
+    try {
+      if (await sp.setStringList(_archiveKey, full)) return;
+      debugPrint('[feiyu] history archive rejected, retrying without images');
+    } catch (e) {
+      debugPrint('[feiyu] history archive overflow, dropping images: $e');
+    }
+    try {
+      await sp.setStringList(_archiveKey, _encode(keep, withImage: false));
+    } catch (e) {
+      debugPrint('[feiyu] history archive failed: $e');
+    }
+  }
+
+  static Future<List<Message>> loadArchive() async {
+    final sp = await SharedPreferences.getInstance();
+    return _decode(sp.getStringList(_archiveKey) ?? const []);
+  }
+
+  /// 持久化「已经折成情景的消息条数」，重启后不必重抽整段历史。
+  /// 没有这个键 = 旧版本升上来的历史，调用方按「已处理」对待。
+  static Future<int?> loadCursor() async {
+    final sp = await SharedPreferences.getInstance();
+    return sp.getInt(_cursorKey);
+  }
+
+  static Future<void> saveCursor(int value) => _serial<void>(() async {
+        final sp = await SharedPreferences.getInstance();
+        await sp.setInt(_cursorKey, value);
+      }).catchError((Object e) {
+        debugPrint('[feiyu] digest cursor save failed: $e');
+      });
+
+  /// 合并两份历史，按「角色 + 时间 + 正文」去重，保留时间顺序。
+  ///
+  /// 启动时磁盘里的旧历史是 [older]，加载期间用户已经发出去的消息是 [newer]。
+  static List<Message> merge(List<Message> older, List<Message> newer) {
+    String key(Message m) => '${m.role}\u0000${m.at.toIso8601String()}\u0000'
+        '${m.content}\u0000${m.imageBase64?.length ?? 0}';
+    final seen = <String>{};
+    final out = <Message>[];
+    for (final m in <Message>[...older, ...newer]) {
+      if (seen.add(key(m))) out.add(m);
+    }
+    return out.length > _maxMessages
+        ? out.sublist(out.length - _maxMessages)
+        : out;
+  }
+
+  static Future<void> save(List<Message> messages) {
+    // Snapshot now: the list keeps growing while the write is queued.
+    final snapshot = List<Message>.of(messages);
+    return _serial<void>(() => _write(snapshot)).catchError((Object e) {
+      debugPrint('[feiyu] history save failed: $e');
+    });
+  }
+
+  static Future<void> _write(List<Message> messages) async {
+    final sp = await SharedPreferences.getInstance();
+    final keep = _keepLast(messages);
+    final full = _encode(keep, withImage: true);
+    try {
+      if (await sp.setStringList(_k, full)) return;
+    } catch (e) {
+      debugPrint('[feiyu] history save overflow (${full.length} rows): $e');
+    }
+    // 配额不够时先丢图片，正文比图片重要得多。
+    final textOnly = _encode(keep, withImage: false);
+    try {
+      if (await sp.setStringList(_k, textOnly)) {
+        debugPrint('[feiyu] history saved without images');
+        return;
+      }
+    } catch (e) {
+      debugPrint('[feiyu] history save still too big: $e');
+    }
+    final half = textOnly.length > 100
+        ? textOnly.sublist(textOnly.length - 100)
+        : textOnly;
+    await sp.setStringList(_k, half);
   }
 }
 
@@ -546,7 +655,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   String _digest = '';
   String _timeline = '';
   int _summarized = 0;
+  bool _summarizing = false;
+  bool _memoryBooted = false;
+
+  /// 每次「新会话 / 撤销」都加一，让还在路上的抽取结果作废。
+  int _chatEpoch = 0;
   List<Footprint> _footprints = const [];
+
+  /// Null until probed; drives the tiny dot on the draw button.
+  bool? _comfyOnline;
 
   Settings? _settings;
   bool _busy = false;
@@ -644,6 +761,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         setState(() => _settings = s);
         _armPresence();
         unawaited(_bootHeartbeat());
+        _bootMemoryOnce();
+        unawaited(_checkComfyState());
       }
     }).catchError((Object e, StackTrace st) {
       debugPrint('[feiyu] settings load FAILED: $e');
@@ -657,14 +776,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           );
           _error = '读取本地设置失败（已回退默认值）：$e';
         });
+        // 设置读坏了也要把已经开好的记忆库收个尾。
+        _bootMemoryOnce();
       }
     });
     MemoryStore.open().then((store) {
       if (!mounted) return;
       setState(() => _store = store);
       unawaited(_reloadMemory());
-      unawaited(_runMemoryMaintenance());
-      _scheduleMemoryMaintenance();
+      _bootMemoryOnce();
     }).catchError((Object e) {
       debugPrint('[feiyu] memory open FAILED: $e');
     });
@@ -673,21 +793,34 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }).catchError((Object e) {
       debugPrint('[feiyu] footprints load FAILED: $e');
     });
-    ChatStore.load().then((history) {
+    ChatStore.load().then((history) async {
+      if (!mounted) return;
       if (_preview) {
-        if (!mounted) return;
         setState(() => _messages = List.of(kPreviewMessages));
         _scrollToEnd(animate: false);
         return;
       }
+      final cursor = await ChatStore.loadCursor();
       if (!mounted || history.isEmpty) return;
+      // 磁盘里的旧历史与加载期间已经出现的消息合并，绝不 clear 掉新的。
+      final merged = ChatStore.merge(history, _messages);
+      // 没有游标的存档来自旧版本：老消息当作已整理，只留最近 20 条走一遍正常触发。
+      final treated = cursor == null
+          ? (merged.length > 20 ? merged.length - 20 : 0)
+          : (cursor < 0 ? 0 : (cursor > merged.length ? merged.length : cursor));
       setState(() {
         _messages
           ..clear()
-          ..addAll(history);
+          ..addAll(merged);
+        _summarized = treated;
+        _chatEpoch++;
       });
+      if (cursor == null) unawaited(ChatStore.saveCursor(treated));
       _scrollToEnd(animate: false);
-      debugPrint('[feiyu] restored ${history.length} messages');
+      debugPrint(
+        '[feiyu] restored ${history.length} messages, '
+        '${_messages.length} total, cursor=$_summarized',
+      );
     }).catchError((Object e) {
       debugPrint('[feiyu] history load FAILED: $e');
     });
@@ -812,12 +945,22 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (turns.isEmpty) return '还没有可以整理的话';
     try {
       final sensitive = s.privacyLocalOnly && looksSensitive(recent.map((m) => m.content).join('\n'));
-      final eps = await c.extractEpisodes(turns, at: DateTime.now(), localOnly: sensitive);
-      final stars = sensitive ? 0 : await c.extractGraph(turns, at: DateTime.now());
+      final anchor = recent.last.at;
+      final eps = await c.extractEpisodes(turns, at: anchor, localOnly: sensitive);
+      if (eps == null) {
+        return '整理失败：这次模型没返回。什么都没删，稍后再试一次。';
+      }
+      final stars = sensitive
+          ? 0
+          : await c.extractGraph(
+              turns,
+              at: anchor,
+              episodeId: eps.isEmpty ? null : eps.last,
+            );
       final report = await c.runMaintenance();
       await _reloadMemory();
       final parts = <String>[
-        if (eps > 0) '情景 +$eps',
+        if (eps.isNotEmpty) '情景 +${eps.length}',
         if (stars > 0) '星 +$stars',
         if (report.dayCards > 0) '日结 +${report.dayCards}',
         if (report.weekCards > 0) '周结 +${report.weekCards}',
@@ -833,7 +976,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _openSettings() async {
+  Future<void> _openSettings({bool focusComfy = false}) async {
     final s = await Navigator.of(context).push<Settings>(
       MaterialPageRoute(
         builder: (_) => SettingsPage(
@@ -843,10 +986,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           onMemoryChanged: _reloadMemory,
           onTellAbout: _tellAboutEntity,
           onMemoryNow: _memoryNow,
+          onRestoreChat: _restoreArchivedChat,
           onTryInitiative: _tryInitiativeNow,
           initialInitiativeStatus: _lastInitiativeStatus,
           initialNextCheck: _nextCheckLabel,
           inboxCount: _inbox.unsharedCount,
+          focusComfy: focusComfy,
         ),
       ),
     );
@@ -856,6 +1001,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       // Re-arm the single-shot presence check so toggling "主动开口" on takes
       // effect immediately instead of waiting for the next outgoing message.
       _armPresence();
+      unawaited(_checkComfyState());
     }
   }
 
@@ -1402,11 +1548,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       'function': {
         'name': 'draw',
         'description': '在主人电脑上的 ComfyUI 里画一张图并发到对话里。'
-            '主人要图片、想让你画点什么、或者需要配图时用它。提示词用英文效果通常更好。',
+            '主人要图片、想让你画点什么、或者需要配图时用它。'
+            'prompt 给具体画面；中文会自动翻成英文再送进模型。',
         'parameters': {
           'type': 'object',
           'properties': {
-            'prompt': {'type': 'string', 'description': '画面描述（建议英文）'},
+            'prompt': {'type': 'string', 'description': '画面描述，中英文都行（中文会自动翻译）'},
             'negative': {'type': 'string', 'description': '不想要的东西（可选）'},
           },
           'required': ['prompt'],
@@ -1469,7 +1616,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       '现在是 $today。下面的对话记录可能跨越好几天，注意日期。'
           '如果对方问起以前聊过的事，先看记录和记忆；确实没有就直说没印象，不要编。',
       if (s.memoryEnabled) _factsPrompt,
-      _digest,
+      if (s.memoryEnabled) _digest,
       if (s.memoryEnabled) _timeline,
       '你可以调用这些工具：'
           '① fetch_url 抓网页正文（查资料、看链接时用，别凭空猜网页内容）；'
@@ -1602,10 +1749,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           _busy = false;
           _waitingFirstToken = false;
           _activity = '';
-          if (target.content.trim().isEmpty) _messages.removeLast();
+          if (target.content.trim().isEmpty &&
+              _messages.isNotEmpty &&
+              identical(_messages.last, target)) {
+            _messages.removeLast();
+          }
         });
         unawaited(ChatStore.save(_messages));
-        if (target.content.trim().isNotEmpty && !_inCall) {
+        if (target.content.trim().isNotEmpty &&
+            !_inCall &&
+            _messages.contains(target)) {
           unawaited(_speak(target.content));
         }
         unawaited(_maybeSummarize(s));
@@ -1832,10 +1985,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       final label = isDraw ? '正在作画…' : name == 'remove_bg' ? '正在抠图…' : '正在改图…';
       if (mounted) setState(() => _activity = label);
       try {
+        // ComfyUI 的 CLIP 只认英文：中文原文发过去就是那张「水墨画」。
+        final promptEn = await _englishImagePrompt(prompt);
+        final negativeEn = await _englishImagePrompt((args['negative'] ?? '').toString());
         final patched = patchWorkflow(
           wf,
-          prompt: prompt,
-          negative: (args['negative'] ?? '').toString(),
+          prompt: promptEn,
+          negative: negativeEn,
           seed: DateTime.now().millisecondsSinceEpoch % 1000000007,
           imageName: uploaded,
         );
@@ -2586,11 +2742,78 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     });
   }
 
-  void _clear() => setState(() {
-        _messages.clear();
-        _error = null;
-        unawaited(ChatStore.save(const []));
-      });
+  /// 开始一段新会话：先存档再清空，10 秒内可以撤销。
+  ///
+  /// 这里以前是一键硬删，误触一次整段对话就没了。现在旧对话写进
+  /// `feiyu.history.archive`，并且提示条里能直接恢复。
+  Future<void> _clear() async {
+    if (_messages.isEmpty) {
+      if (_error != null) setState(() => _error = null);
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('开始新会话？'),
+        content: const Text('当前这段对话会先存档，然后从空白开始。\n清空后 10 秒内可以撤销。'),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('继续聊'),
+          ),
+          TextButton(
+            key: const ValueKey('chat-clear-confirm'),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('存档并清空'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    final old = List<Message>.of(_messages);
+    await ChatStore.archive(old);
+    await ChatStore.save(const []);
+    if (!mounted) return;
+    setState(() {
+      _messages.clear();
+      _error = null;
+      _summarized = 0;
+      _turnsSinceDigest = 0;
+      _chatEpoch++;
+    });
+    unawaited(ChatStore.saveCursor(0));
+    _scrollToEnd(animate: false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('已开始新会话，上一段存了 ${old.length} 条'),
+        duration: const Duration(seconds: 10),
+        action: SnackBarAction(
+          label: '撤销',
+          onPressed: () => unawaited(_restoreArchivedChat()),
+        ),
+      ),
+    );
+  }
+
+  /// 把上一段被清空的对话找回来（提示条里的「撤销」）。
+  Future<void> _restoreArchivedChat() async {
+    final archived = await ChatStore.loadArchive();
+    if (archived.isEmpty || !mounted) return;
+    final merged = ChatStore.merge(archived, _messages);
+    await ChatStore.save(merged);
+    await ChatStore.saveCursor(merged.length);
+    if (!mounted) return;
+    setState(() {
+      _messages
+        ..clear()
+        ..addAll(merged);
+      // 存档里的内容之前已经整理过，别在下一句话时整段重抽。
+      _summarized = merged.length;
+      _chatEpoch++;
+    });
+    _scrollToEnd(animate: false);
+  }
 
   /// Visible diagnostics: tells you exactly which piece is missing.
   SceneMood get _mood {
@@ -2659,6 +2882,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// A person does not send one wall of text. If she used `|||`, deliver each
   /// part as its own message with a small pause in between.
   Future<void> _splitIntoSentences(Message target) async {
+    // 用户可能在回复途中「开始新会话」，这条消息已经不在列表里了。
+    if (!_messages.contains(target)) return;
     final parts = target.content
         .split('|||')
         .map((e) => e.trim())
@@ -2677,7 +2902,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       // Thinking + typing time, roughly like a human writing the next line.
       final wait = Duration(milliseconds: 700 + parts[i].length * 28);
       await Future<void>.delayed(wait);
-      if (!mounted) return;
+      if (!mounted || !_messages.contains(target)) return;
       setState(() => _messages.add(Message('assistant', parts[i])));
       _scrollToEnd();
     }
@@ -2728,10 +2953,35 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     );
   }
 
-  /// 一次性、非流式的模型调用（抽记忆、结账、veto 都用它）。
+  /// SD-Turbo 的文本编码器只认英文：中文提示词会被编码到训练分布之外，
+  /// 出来的就是一张灰糊的「水墨画」。翻译一次，同一个描述不再重复花 token。
+  late final ImagePromptTranslator _imageText =
+      ImagePromptTranslator(translate: _translateImagePrompt);
+
+  Future<String> _translateImagePrompt(String text) async {
+    final s = _settings;
+    if (s == null) return text;
+    return _plainChat(
+      s,
+      '你是 Stable Diffusion 提示词翻译器。把下面的画面描述写成一句简短、具体的英文提示词：'
+      '主体、场景、光线、风格写到就行，不超过 25 个词；'
+      '不要解释、不要引号、只输出这一句英文。\n\n$text',
+      maxTokens: 120,
+    );
+  }
+
+  /// 英文直接放过；中文先翻译。翻译失败就退回原文（至少和以前一样）。
+  Future<String> _englishImagePrompt(String text) => _imageText.english(text);
+
+  /// 一次性、非流式的模型调用（抽记忆、结账、翻译提示词都用它）。
+  ///
+  /// 这些调用不需要「先想一段」：在推理型模型上，思考过程会把 max_tokens 吃光，
+  /// `content` 返回空串（翻译提示词曾因此整段丢掉）。所以默认关掉推理，遇到不认
+  /// 这个参数的网关再退回普通请求。
   Future<String> _plainChat(Settings s, String prompt, {int? maxTokens}) async {
     final base = s.baseUrl.endsWith('/') ? s.baseUrl.substring(0, s.baseUrl.length - 1) : s.baseUrl;
-    final res = await http
+
+    Future<http.Response> send({required bool quiet}) => http
         .post(
           Uri.parse('$base/chat/completions'),
           headers: {'content-type': 'application/json', 'authorization': 'Bearer ${s.apiKey}'},
@@ -2739,12 +2989,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             'model': s.model,
             'stream': false,
             if (maxTokens != null) 'max_tokens': maxTokens,
+            if (quiet) 'reasoning_effort': 'none',
             'messages': [
               {'role': 'user', 'content': prompt},
             ],
           }),
         )
         .timeout(const Duration(seconds: 90));
+
+    var res = await send(quiet: true);
+    if (res.statusCode == 400) res = await send(quiet: false);
     if (res.statusCode != 200) {
       throw StateError('memory chat HTTP ${res.statusCode}');
     }
@@ -2755,26 +3009,36 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   /// 结账：把走完的日子折成日结，再往上折周/月。启动后跑一次，之后每天 23:10 一次。
   Future<void> _runMemoryMaintenance() async {
+    // 先结账再清扫：清扫会把老情景打进冷宫，先扫的话它们就再也折不进日结了。
+    final c = _curator(_settings);
+    if (c != null) {
+      try {
+        final report = await c.runMaintenance();
+        debugPrint('[feiyu] memory maintenance $report');
+        if (report.didSomething) await _reloadMemory();
+      } catch (e) {
+        debugPrint('[feiyu] memory maintenance FAILED: $e');
+      }
+    }
     final store = _store;
     if (store != null) {
       try {
-        // 先让旧星褪色、剪掉废边、按需裁老情景，再结账，顺序不能反：
-        // 结账会把当天情景折进日结，裁掉的就再也折不进去了。
+        // 旧星褪色、剪掉废边、把太旧的情景放进冷宫（不删）。
         final swept = await store.nightlySweep();
         if (swept > 0) debugPrint('[feiyu] nightly sweep touched $swept');
       } catch (e) {
         debugPrint('[feiyu] nightly sweep FAILED: $e');
       }
     }
-    final c = _curator(_settings);
-    if (c == null) return;
-    try {
-      final report = await c.runMaintenance();
-      debugPrint('[feiyu] memory maintenance $report');
-      if (report.didSomething) await _reloadMemory();
-    } catch (e) {
-      debugPrint('[feiyu] memory maintenance FAILED: $e');
-    }
+  }
+
+  /// 设置和记忆库都就绪后再跑启动维护：谁先回来都行，只跑一次。
+  /// 以前是记忆库一打开就跑，设置还没读回来时 `_curator` 为 null，维护就静默跳过了。
+  void _bootMemoryOnce() {
+    if (_memoryBooted || _store == null || _settings == null) return;
+    _memoryBooted = true;
+    unawaited(_runMemoryMaintenance());
+    _scheduleMemoryMaintenance();
   }
 
   void _scheduleMemoryMaintenance() {
@@ -2790,32 +3054,75 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   /// Compress the backlog into episodes + a day card source when it grows too long.
   Future<void> _maybeSummarize(Settings s) async {
+    if (!s.memoryEnabled) return;
+    if (_summarizing) return;
     final pending = _messages.length - _summarized;
     if (pending < 20) return;
-    final slice = _messages.sublist(_summarized, _messages.length - 4);
+    final end = _messages.length - 4;
+    if (end <= _summarized) return;
+    // 一次只喂模型一小段：积压再长也不会把上下文撑爆；失败了下一轮只重试这一段。
+    const chunk = 40;
+    var stop = _summarized + chunk < end ? _summarized + chunk : end;
+    // 长文/粘贴的聊天记录再把这一段压短，别让一次抽取就超上下文。
+    var chars = 0;
+    for (var i = _summarized; i < stop; i++) {
+      chars += _messages[i].content.length;
+      if (chars > 6000 && i > _summarized) {
+        stop = i;
+        break;
+      }
+    }
+    final slice = _messages.sublist(_summarized, stop);
     if (slice.isEmpty) return;
     final turns = slice
         .where((m) => m.content.trim().isNotEmpty)
         .map((m) => TranscriptTurn(fromUser: m.role == 'user', text: m.content))
         .toList();
-    if (turns.isEmpty) return;
+    if (turns.isEmpty) {
+      // 这一段全是空的（例如只剩图片占位），没什么可抽的，直接跨过去。
+      _summarized = stop;
+      unawaited(ChatStore.saveCursor(stop));
+      return;
+    }
 
     final curator = _curator(s);
     if (curator == null) return;
+    // 记忆要锚在这段对话真正发生的时间上。重启后补抽的积压可能已经是几天前，
+    // 用 DateTime.now() 会把它们全搬到今天，时间线就乱了。
+    final anchor = slice.last.at;
+    final epoch = _chatEpoch;
+    _summarizing = true;
     try {
       final sensitive = s.privacyLocalOnly && looksSensitive(slice.map((m) => m.content).join('\n'));
-      final added = await curator.extractEpisodes(turns, at: DateTime.now(), localOnly: sensitive);
-      _summarized = _messages.length - 4;
-      if (added > 0) {
-        debugPrint('[feiyu] extracted $added episodes${sensitive ? ' (local only)' : ''}');
+      final added = await curator.extractEpisodes(turns, at: anchor, localOnly: sensitive);
+      if (added == null) {
+        // 模型/网络失败。游标不动，下一轮重试同一段，不能当成「没东西可记」跳过。
+        debugPrint('[feiyu] summarize failed; kept cursor at $_summarized');
+        return;
+      }
+      if (epoch != _chatEpoch) {
+        // 抽的这段时间里用户开了新会话，这段结果已经不属于当前对话了。
+        return;
+      }
+      _summarized = stop;
+      unawaited(ChatStore.saveCursor(_summarized));
+      if (added.isNotEmpty) {
+        debugPrint('[feiyu] extracted ${added.length} episodes${sensitive ? ' (local only)' : ''}');
         await _reloadMemory();
       }
       if (!sensitive) {
-        final stars = await curator.extractGraph(turns, at: DateTime.now());
+        // 把这条边挂到刚写下的情景上，图扩展（_graphBoost）才有种子可查。
+        final stars = await curator.extractGraph(
+          turns,
+          at: anchor,
+          episodeId: added.isEmpty ? null : added.last,
+        );
         if (stars > 0) debugPrint('[feiyu] graph +$stars entities');
       }
     } catch (e) {
       debugPrint('[feiyu] summarize FAILED: $e');
+    } finally {
+      _summarizing = false;
     }
   }
 
@@ -2864,6 +3171,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       builder: (_) => ComfyPage(
         baseUrl: s.comfyUrl,
         workflowJson: s.comfyWorkflow,
+        onEditConfig: _comfyConfigAfterSettings,
+        onTranslatePrompt: _englishImagePrompt,
         onUseAsAvatar: (Uint8List bytes) async {
           s.avatar = base64Encode(bytes);
           await s.save();
@@ -2872,6 +3181,26 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         },
       ),
     ));
+    unawaited(_checkComfyState());
+  }
+
+  /// Settings → 「ComfyUI」, then hand the freshly saved values back to the
+  /// drawing page (which would otherwise keep the old workflow).
+  Future<ComfyConfig?> _comfyConfigAfterSettings() async {
+    await _openSettings(focusComfy: true);
+    if (!mounted) return null;
+    final s = _settings;
+    if (s == null) return null;
+    return ComfyConfig(baseUrl: s.comfyUrl, workflowJson: s.comfyWorkflow);
+  }
+
+  /// Keep the little dot on the draw button honest.
+  Future<void> _checkComfyState() async {
+    final s = _settings;
+    if (s == null) return;
+    final bool online = await ComfyClient.resolved(s.comfyUrl, web: kIsWeb).ping();
+    if (!mounted) return;
+    setState(() => _comfyOnline = online);
   }
 
   Future<void> _openFootprints() async {
@@ -2979,7 +3308,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           avatarBase64: _settings?.avatar,
           onFootprints: _openFootprints,
           onComfy: _openComfy,
-          onNewChat: _clear,
+          comfyOnline: _comfyOnline,
+          onNewChat: () => unawaited(_clear()),
           onSettings: _openSettings,
         ),
         body: Stack(
@@ -3130,10 +3460,16 @@ class SettingsPage extends StatefulWidget {
   final Future<void> Function()? onMemoryChanged;
   final GalaxyAsk? onTellAbout;
   final Future<String> Function()? onMemoryNow;
+  final Future<void> Function()? onRestoreChat;
   final Future<String> Function()? onTryInitiative;
   final String? initialInitiativeStatus;
   final String? initialNextCheck;
   final int inboxCount;
+
+  /// Opened from the drawing page: jump straight to the ComfyUI card instead
+  /// of dropping the user at the top of a long settings list.
+  final bool focusComfy;
+
   const SettingsPage({
     super.key,
     required this.initial,
@@ -3141,16 +3477,20 @@ class SettingsPage extends StatefulWidget {
     this.onMemoryChanged,
     this.onTellAbout,
     this.onMemoryNow,
+    this.onRestoreChat,
     this.onTryInitiative,
     this.initialInitiativeStatus,
     this.initialNextCheck,
     this.inboxCount = 0,
+    this.focusComfy = false,
   });
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
 
 class _SettingsPageState extends State<SettingsPage> {
+  final ScrollController _scrollCtl = ScrollController();
+  final GlobalKey _comfySectionKey = GlobalKey();
   late final TextEditingController _base;
   late final TextEditingController _key;
   late final TextEditingController _model;
@@ -3162,6 +3502,7 @@ class _SettingsPageState extends State<SettingsPage> {
   String? _exportHint;
   String? _memoryNowHint;
   bool _memoryNowBusy = false;
+  bool _restoringChat = false;
   late bool _proactiveEnabled;
   late bool _proactiveShareEnabled;
   late bool _sceneEnabled;
@@ -3174,6 +3515,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _ttsModelReady = false;
   String _comfyStatus = '';
   bool _comfyTesting = false;
+  bool _comfyStarting = false;
   bool _downloadingTts = false;
   double _ttsProgress = 0;
   late String _provider;
@@ -3247,10 +3589,25 @@ class _SettingsPageState extends State<SettingsPage> {
     _avatar = widget.initial.avatar;
     _userAvatar = widget.initial.userAvatar;
     if (widget.initial.apiKey.trim().isNotEmpty) _loadModels();
+    if (widget.focusComfy) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToComfy());
+    }
+  }
+
+  void _scrollToComfy() {
+    final BuildContext? ctx = _comfySectionKey.currentContext;
+    if (ctx == null || !mounted) return;
+    Scrollable.ensureVisible(
+      ctx,
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutCubic,
+      alignment: .02,
+    );
   }
 
   @override
   void dispose() {
+    _scrollCtl.dispose();
     _base.dispose();
     _asr.dispose();
     _asrBase.dispose();
@@ -3295,7 +3652,9 @@ class _SettingsPageState extends State<SettingsPage> {
       _comfyTesting = true;
       _comfyStatus = '正在连接 $url …';
     });
-    final client = ComfyClient(url);
+    // On web the page is on 127.0.0.1:8090, so a direct 8188 call is blocked
+    // by CORS; go through the local server's /comfy proxy instead.
+    final client = ComfyClient.resolved(url, web: kIsWeb);
     final ok = await client.ping(timeout: const Duration(seconds: 8));
     if (!mounted) return;
     if (ok) {
@@ -3314,6 +3673,36 @@ class _SettingsPageState extends State<SettingsPage> {
             '地址是否是这台电脑的局域网 IP、防火墙是否放行 8188';
       });
     }
+  }
+
+  /// Web only: ask server.mjs to launch the ComfyUI supervisor, then wait for
+  /// it to answer and report through the normal "测试连接" notice.
+  Future<void> _startComfyFromSettings() async {
+    setState(() {
+      _comfyStarting = true;
+      _comfyStatus = '正在启动 ComfyUI…（首次启动要加载模型，约 1 分钟）';
+    });
+    final String? err = await ComfyEngine.start();
+    if (!mounted) return;
+    if (err != null) {
+      setState(() {
+        _comfyStarting = false;
+        _comfyStatus = err;
+      });
+      return;
+    }
+    final url = _comfyUrl.text.trim().isEmpty ? 'http://192.168.1.10:8188' : _comfyUrl.text.trim();
+    final client = ComfyClient.resolved(url, web: kIsWeb);
+    for (int i = 0; i < 20; i++) {
+      await Future<void>.delayed(const Duration(seconds: 3));
+      if (!mounted) return;
+      if (await client.ping()) break;
+      if (!mounted) return;
+      setState(() => _comfyStatus = '正在启动 ComfyUI… ${(i + 1) * 3}s');
+    }
+    if (!mounted) return;
+    setState(() => _comfyStarting = false);
+    await _testComfy();
   }
 
   Future<void> _downloadTts() async {
@@ -3517,6 +3906,15 @@ class _SettingsPageState extends State<SettingsPage> {
     if (store == null) return;
     try {
       final snapshot = await store.exportSnapshot();
+      // 聊天记录不在记忆库（drift）里，但「留底」必须连对话一起走：
+      // 之前的导出只有星图/日记，用户拿到的备份缺了最核心的那部分。
+      final chat = await ChatStore.load();
+      snapshot['chat'] = chat.map((m) => m.toStore()).toList();
+      final archived = await ChatStore.loadArchive();
+      if (archived.isNotEmpty) {
+        snapshot['chatArchive'] = archived.map((m) => m.toStore()).toList();
+      }
+      snapshot['chatCount'] = chat.length;
       final json = const JsonEncoder.withIndent('  ').convert(snapshot);
       final path = await saveMemoryExport(json);
       if (!mounted) return;
@@ -3524,6 +3922,29 @@ class _SettingsPageState extends State<SettingsPage> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _exportHint = '导出失败：$e');
+    }
+  }
+
+  /// 把「上次清空」留下的存档合并回当前对话（撤销提示条 10 秒后就摸不到了）。
+  Future<void> _restoreChat() async {
+    final fn = widget.onRestoreChat;
+    if (fn == null || _restoringChat) return;
+    setState(() => _restoringChat = true);
+    try {
+      final archived = await ChatStore.loadArchive();
+      if (archived.isEmpty) {
+        if (!mounted) return;
+        setState(() => _exportHint = '没有可恢复的对话存档');
+        return;
+      }
+      await fn();
+      if (!mounted) return;
+      setState(() => _exportHint = '已合并回当前对话（${archived.length} 条）');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _exportHint = '恢复失败：$e');
+    } finally {
+      if (mounted) setState(() => _restoringChat = false);
     }
   }
 
@@ -3630,6 +4051,48 @@ class _SettingsPageState extends State<SettingsPage> {
     return result;
   }
 
+  /// One remembered fact as a compact card; two of them fit side by side.
+  Widget _factCard(int i) {
+    final fact = _facts[i];
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
+      decoration: BoxDecoration(
+        color: AppPalette.surface,
+        borderRadius: BorderRadius.circular(AppRadii.m),
+        border: Border.all(color: AppPalette.line),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Expanded(
+            child: Text(
+              fact.content,
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+              style: AppType.bodySmall.copyWith(color: AppPalette.text2),
+            ),
+          ),
+          const SizedBox(width: 2),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              _FactAction(
+                icon: Icons.edit_outlined,
+                tooltip: '编辑这条记忆',
+                onPressed: () => _editFact(i),
+              ),
+              _FactAction(
+                icon: Icons.delete_outline,
+                tooltip: '删除这条记忆',
+                onPressed: () => _deleteFact(i),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _editFact(int index) async {
     if (index < 0 || index >= _facts.length) return;
     final target = _facts[index];
@@ -3681,9 +4144,15 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
-        children: [
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: SingleChildScrollView(
+            controller: _scrollCtl,
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
           SectionCard(
             key: const ValueKey('settings-section-model'),
             title: '模型',
@@ -4095,117 +4564,74 @@ class _SettingsPageState extends State<SettingsPage> {
                 value: _privacyLocalOnly,
                 onChanged: (v) => setState(() => _privacyLocalOnly = v),
               ),
-              InkWell(
-                key: const ValueKey('settings-open-galaxy'),
-                borderRadius: BorderRadius.circular(AppRadii.m),
-                onTap: widget.memory == null ? null : _openGalaxy,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                  child: Row(
-                    children: <Widget>[
-                      const Icon(Icons.auto_awesome_outlined, size: 18, color: AppPalette.primary),
-                      const SizedBox(width: AppSpacing.s),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: <Widget>[
-                            Text('记忆星图', style: AppType.body.copyWith(color: AppPalette.text1)),
-                            Text(
-                              _stars == 0 ? '还没有星，聊聊就有了' : '$_stars 颗星，点开可以让她讲',
-                              style: AppType.caption.copyWith(color: AppPalette.text3),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const Icon(Icons.chevron_right, size: 18, color: AppPalette.text4),
-                    ],
-                  ),
-                ),
-              ),
-              InkWell(
-                key: const ValueKey('settings-open-health'),
-                borderRadius: BorderRadius.circular(AppRadii.m),
-                onTap: widget.memory == null ? null : _openHealth,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                  child: Row(
-                    children: <Widget>[
-                      const Icon(Icons.monitor_heart_outlined, size: 18, color: AppPalette.primary),
-                      const SizedBox(width: AppSpacing.s),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: <Widget>[
-                            Text('记忆体检', style: AppType.body.copyWith(color: AppPalette.text1)),
-                            Text(
-                              '记得多厚、有没有说法打架、哪些星快灭了',
-                              style: AppType.caption.copyWith(color: AppPalette.text3),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const Icon(Icons.chevron_right, size: 18, color: AppPalette.text4),
-                    ],
-                  ),
-                ),
-              ),
               const SizedBox(height: 14),
-              Text('现在记得 ${_facts.length} 条', style: AppType.caption.copyWith(color: AppPalette.text2)),
-              const SizedBox(height: 6),
-              if (_facts.isEmpty)
-                Text('还没有记住任何事', style: AppType.caption.copyWith(color: AppPalette.text3))
-              else
-                ...List<Widget>.generate(_facts.length, (i) {
-                  final fact = _facts[i];
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        Expanded(
-                          child: Text(
-                            fact.content,
-                            maxLines: 3,
-                            overflow: TextOverflow.ellipsis,
-                            style: AppType.bodySmall.copyWith(color: AppPalette.text2),
-                          ),
-                        ),
-                        const SizedBox(width: AppSpacing.xs),
-                        IconButton(
-                          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
-                          padding: EdgeInsets.zero,
-                          visualDensity: VisualDensity.compact,
-                          iconSize: 18,
-                          tooltip: '编辑这条记忆',
-                          onPressed: () => _editFact(i),
-                          icon: const Icon(Icons.edit_outlined),
-                        ),
-                        IconButton(
-                          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
-                          padding: EdgeInsets.zero,
-                          visualDensity: VisualDensity.compact,
-                          iconSize: 18,
-                          tooltip: '删除这条记忆',
-                          onPressed: () => _deleteFact(i),
-                          icon: const Icon(Icons.delete_outline),
-                        ),
-                      ],
-                    ),
-                  );
-                }),
-              const SizedBox(height: 4),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: _addFact,
-                  icon: const Icon(Icons.add, size: 16),
-                  label: const Text('添加一条记忆'),
-                ),
+              _ResponsiveRow(
+                children: <Widget>[
+                  _SettingsTile(
+                    key: const ValueKey('settings-open-galaxy'),
+                    icon: Icons.auto_awesome_outlined,
+                    title: '记忆星图',
+                    subtitle: _stars == 0 ? '还没有星，聊聊就有了' : '$_stars 颗星，点开可以让她讲',
+                    onTap: widget.memory == null ? null : _openGalaxy,
+                  ),
+                  _SettingsTile(
+                    key: const ValueKey('settings-open-health'),
+                    icon: Icons.monitor_heart_outlined,
+                    title: '记忆体检',
+                    subtitle: '记得多厚、有没有说法打架、哪些星快灭了',
+                    onTap: widget.memory == null ? null : _openHealth,
+                  ),
+                ],
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 16),
               Row(
                 children: <Widget>[
+                  Expanded(
+                    child: Text(
+                      '记住的事 · ${_facts.length} 条',
+                      style: AppType.label.copyWith(color: AppPalette.text3),
+                    ),
+                  ),
                   TextButton.icon(
+                    onPressed: _addFact,
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text('添加'),
+                    style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                  ),
+                ],
+              ),
+              if (_facts.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    '还没有记住任何事，聊聊就有了',
+                    style: AppType.caption.copyWith(color: AppPalette.text3),
+                  ),
+                )
+              else
+                LayoutBuilder(
+                  builder: (BuildContext context, BoxConstraints constraints) {
+                    const double gap = AppSpacing.m;
+                    final bool twoColumns = constraints.maxWidth >= 560;
+                    final double width = twoColumns
+                        ? (constraints.maxWidth - gap) / 2
+                        : constraints.maxWidth;
+                    return Wrap(
+                      spacing: gap,
+                      runSpacing: gap,
+                      children: <Widget>[
+                        for (int i = 0; i < _facts.length; i++)
+                          SizedBox(width: width, child: _factCard(i)),
+                      ],
+                    );
+                  },
+                ),
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: AppSpacing.s,
+                runSpacing: AppSpacing.s,
+                children: <Widget>[
+                  OutlinedButton.icon(
                     key: const ValueKey('settings-memory-now'),
                     onPressed: widget.onMemoryNow == null || _memoryNowBusy ? null : _runMemoryNow,
                     icon: _memoryNowBusy
@@ -4216,29 +4642,52 @@ class _SettingsPageState extends State<SettingsPage> {
                           )
                         : const Icon(Icons.auto_fix_high_outlined, size: 16),
                     label: const Text('现在就整理一次'),
+                    style: _settingsActionStyle(),
                   ),
-                  const SizedBox(width: AppSpacing.s),
-                  TextButton.icon(
+                  OutlinedButton.icon(
                     key: const ValueKey('settings-export-memory'),
                     onPressed: widget.memory == null ? null : _exportMemory,
                     icon: const Icon(Icons.file_download_outlined, size: 16),
                     label: const Text('导出记忆'),
+                    style: _settingsActionStyle(),
                   ),
-                  const SizedBox(width: AppSpacing.s),
-                  TextButton.icon(
+                  OutlinedButton.icon(
                     key: const ValueKey('settings-wipe-memory'),
                     onPressed: widget.memory == null ? null : _wipeMemory,
                     icon: const Icon(Icons.delete_forever_outlined, size: 16),
                     label: const Text('清空记忆'),
-                    style: TextButton.styleFrom(foregroundColor: AppPalette.danger),
+                    style: _settingsActionStyle(danger: true),
                   ),
                 ],
               ),
-              if (_exportHint != null)
+              if (_exportHint != null) ...[
+                const SizedBox(height: 6),
                 Text(_exportHint!, style: AppType.caption.copyWith(color: AppPalette.text3)),
-              if (_memoryNowHint != null)
+              ],
+              if (_memoryNowHint != null) ...[
+                const SizedBox(height: 6),
                 Text(_memoryNowHint!, style: AppType.caption.copyWith(color: AppPalette.text3)),
+              ],
+              if (widget.onRestoreChat != null) ...[
+                const SizedBox(height: 16),
+                const Divider(height: 1, color: AppPalette.line),
+                const SizedBox(height: 14),
+                const SectionHeader(label: '会话'),
+                const SizedBox(height: AppSpacing.s),
+                _SettingsTile(
+                  key: const ValueKey('settings-restore-chat'),
+                  icon: Icons.history,
+                  title: '恢复上次清空的对话',
+                  subtitle: '上一段对话还在存档里，点一下合并回当前对话',
+                  loading: _restoringChat,
+                  onTap: _restoringChat ? null : _restoreChat,
+                ),
+              ],
+              const SizedBox(height: 16),
+              const Divider(height: 1, color: AppPalette.line),
               const SizedBox(height: 14),
+              const SectionHeader(label: '主动'),
+              const SizedBox(height: AppSpacing.s),
               _SettingsSwitch(
                 title: '主动开口',
                 subtitle: _proactiveEnabled
@@ -4291,15 +4740,79 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
               ],
-              const SizedBox(height: 6),
-              Text(
-                '发现箱：${widget.inboxCount} 条',
-                key: const ValueKey('settings-inbox-count'),
-                style: AppType.caption.copyWith(color: AppPalette.text3),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(AppSpacing.m),
+                decoration: BoxDecoration(
+                  color: AppPalette.surface,
+                  borderRadius: BorderRadius.circular(AppRadii.m),
+                  border: Border.all(color: AppPalette.line),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            '发现箱',
+                            style: AppType.caption.copyWith(color: AppPalette.text3),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '${widget.inboxCount} 条',
+                            key: const ValueKey('settings-inbox-count'),
+                            style: AppType.bodySmall.copyWith(color: AppPalette.text1),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            _initiativeStatus ?? '还没有试过',
+                            style: AppType.caption.copyWith(color: AppPalette.text3),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      width: 1,
+                      height: 56,
+                      margin: const EdgeInsets.symmetric(horizontal: AppSpacing.m),
+                      color: AppPalette.line,
+                    ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            widget.initialNextCheck ?? '下次检查：未安排',
+                            key: const ValueKey('settings-next-check'),
+                            style: AppType.caption.copyWith(color: AppPalette.text3),
+                          ),
+                          const SizedBox(height: 4),
+                          OutlinedButton.icon(
+                            key: const ValueKey('settings-try-initiative'),
+                            onPressed: (_tryingInitiative || widget.onTryInitiative == null)
+                                ? null
+                                : _tryInitiative,
+                            icon: _tryingInitiative
+                                ? const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(strokeWidth: 1.6),
+                                  )
+                                : const Icon(Icons.send_outlined, size: 15),
+                            label: const Text('现在试一次'),
+                            style: _settingsActionStyle(),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
               if (widget.inboxCount == 0 && _proactiveShareEnabled)
                 Padding(
-                  padding: const EdgeInsets.only(top: 4),
+                  padding: const EdgeInsets.only(top: AppSpacing.s),
                   child: Text(
                     kIsWeb
                         ? '发现箱为空：Web 版需先用 node server/server.mjs 打开（靠 /fetch 反代才能抓热点），否则只能闲聊不能分享。'
@@ -4307,34 +4820,6 @@ class _SettingsPageState extends State<SettingsPage> {
                     style: AppType.caption.copyWith(color: AppPalette.text3),
                   ),
                 ),
-              const SizedBox(height: 10),
-              Text(
-                _initiativeStatus ?? '还没有试过',
-                style: AppType.caption.copyWith(color: AppPalette.text3),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                widget.initialNextCheck ?? '下次检查：未安排',
-                key: const ValueKey('settings-next-check'),
-                style: AppType.caption.copyWith(color: AppPalette.text3),
-              ),
-              const SizedBox(height: 4),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton(
-                  key: const ValueKey('settings-try-initiative'),
-                  onPressed: (_tryingInitiative || widget.onTryInitiative == null)
-                      ? null
-                      : _tryInitiative,
-                  child: _tryingInitiative
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('现在试一次'),
-                ),
-              ),
             ],
           ),
           const SizedBox(height: 16),
@@ -4399,7 +4884,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           const SizedBox(height: 16),
           SectionCard(
-            key: const ValueKey('settings-section-comfy'),
+            key: _comfySectionKey,
             title: 'ComfyUI',
             children: <Widget>[
               SettingsRow(
@@ -4413,13 +4898,29 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
               ),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: _comfyTesting ? null : _testComfy,
-                  icon: const Icon(Icons.wifi_tethering, size: 16),
-                  label: const Text('测试连接', style: TextStyle(fontSize: 12)),
-                ),
+              Wrap(
+                spacing: AppSpacing.s,
+                runSpacing: AppSpacing.s,
+                children: <Widget>[
+                  TextButton.icon(
+                    onPressed: _comfyTesting ? null : _testComfy,
+                    icon: const Icon(Icons.wifi_tethering, size: 16),
+                    label: const Text('测试连接', style: TextStyle(fontSize: 12)),
+                  ),
+                  if (ComfyEngine.supported)
+                    TextButton.icon(
+                      key: const ValueKey('settings-start-comfy'),
+                      onPressed: _comfyStarting ? null : _startComfyFromSettings,
+                      icon: _comfyStarting
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 1.6),
+                            )
+                          : const Icon(Icons.play_arrow_rounded, size: 16),
+                      label: const Text('启动 ComfyUI', style: TextStyle(fontSize: 12)),
+                    ),
+                ],
               ),
               if (_comfyStatus.isNotEmpty)
                 Padding(
@@ -4438,21 +4939,39 @@ class _SettingsPageState extends State<SettingsPage> {
                   controller: _comfyWorkflow,
                   minLines: 2,
                   maxLines: 6,
+                  onChanged: (_) => setState(() {}),
                   decoration: const InputDecoration(
                     hintText: '「Save (API Format)」导出的 JSON',
                     isDense: true,
-                    helperText: '提示词会自动写进采样器的正向/负向输入',
+                    helperText: '提示词会自动写进采样器的正向/负向输入；中文会先翻成英文（CLIP 只认英文）',
                   ),
                 ),
               ),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: () => setState(() {
-                    _comfyWorkflow.text = kComfySdTurboWorkflow;
-                  }),
-                  icon: const Icon(Icons.auto_fix_high, size: 16),
-                  label: const Text('填入示例（SD-Turbo）', style: TextStyle(fontSize: 12)),
+              Wrap(
+                spacing: AppSpacing.s,
+                runSpacing: AppSpacing.s,
+                children: <Widget>[
+                  for (final ComfyWorkflowTemplate t in kComfyWorkflows)
+                    OutlinedButton.icon(
+                      key: ValueKey('settings-comfy-template-${t.id}'),
+                      onPressed: () => setState(() => _comfyWorkflow.text = t.json),
+                      style: _settingsActionStyle(),
+                      icon: Icon(
+                        comfyWorkflowTemplateOf(_comfyWorkflow.text)?.id == t.id
+                            ? Icons.check_circle
+                            : Icons.auto_fix_high,
+                        size: 16,
+                      ),
+                      label: Text(t.name),
+                    ),
+                ],
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 6, bottom: 2, left: 2),
+                child: Text(
+                  '内置模板：${kComfyWorkflows.map((t) => '${t.name} · ${t.note}').join('；')}'
+                  '${comfyWorkflowTemplateOf(_comfyWorkflow.text) == null ? ' · 当前是自定义工作流' : ''}',
+                  style: AppType.caption.copyWith(color: AppPalette.text3),
                 ),
               ),
               const SizedBox(height: 14),
@@ -4516,7 +5035,10 @@ class _SettingsPageState extends State<SettingsPage> {
               Text('0.8.0+8', style: AppType.caption.copyWith(color: AppPalette.text3)),
             ],
           ),
-        ],
+            ],
+          ),
+          ),
+        ),
       ),
       ),
     );
@@ -4614,6 +5136,175 @@ class _AvatarSettingsBlock extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Two (or more) children share a row when there is room, otherwise stack.
+/// Settings used to be one endless column of one-liners; this keeps related
+/// entries next to each other on the wide web layout without squeezing phones.
+class _ResponsiveRow extends StatelessWidget {
+  const _ResponsiveRow({required this.children});
+
+  final List<Widget> children;
+
+  static const double _spacing = AppSpacing.m;
+  static const double _breakpoint = 520;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        if (constraints.maxWidth < _breakpoint || children.length < 2) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              for (int i = 0; i < children.length; i++) ...<Widget>[
+                if (i > 0) const SizedBox(height: _spacing),
+                children[i],
+              ],
+            ],
+          );
+        }
+        return IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              for (int i = 0; i < children.length; i++) ...<Widget>[
+                if (i > 0) const SizedBox(width: _spacing),
+                Expanded(child: children[i]),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// A tappable entry tile: icon + title + subtitle + chevron. Used instead of
+/// bare `TextButton`s so the memory/session entries line up side by side.
+class _SettingsTile extends StatelessWidget {
+  const _SettingsTile({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    this.onTap,
+    this.loading = false,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback? onTap;
+  final bool loading;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool enabled = onTap != null;
+    return Opacity(
+      opacity: enabled || loading ? 1 : .55,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadii.m),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.m,
+            AppSpacing.m,
+            AppSpacing.s,
+            AppSpacing.m,
+          ),
+          decoration: BoxDecoration(
+            color: AppPalette.surface,
+            borderRadius: BorderRadius.circular(AppRadii.m),
+            border: Border.all(color: AppPalette.line),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Padding(
+                padding: const EdgeInsets.only(top: 1),
+                child: Icon(icon, size: 18, color: AppPalette.primary),
+              ),
+              const SizedBox(width: AppSpacing.s),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      title,
+                      style: AppType.bodySmall.copyWith(
+                        color: AppPalette.text1,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      subtitle,
+                      style: AppType.caption.copyWith(color: AppPalette.text3),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: AppSpacing.xs),
+              if (loading)
+                const Padding(
+                  padding: EdgeInsets.only(top: 2, right: 2),
+                  child: SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 1.8),
+                  ),
+                )
+              else
+                const Icon(Icons.chevron_right, size: 18, color: AppPalette.text4),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Small, borderless icon button used inside fact cards.
+class _FactAction extends StatelessWidget {
+  const _FactAction({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+      padding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      iconSize: 17,
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: Icon(icon),
+    );
+  }
+}
+
+/// Shared look for the small action buttons inside settings cards.
+ButtonStyle _settingsActionStyle({bool danger = false}) {
+  return OutlinedButton.styleFrom(
+    foregroundColor: danger ? AppPalette.danger : AppPalette.text2,
+    side: BorderSide(
+      color: danger ? AppPalette.danger.withValues(alpha: .30) : AppPalette.line,
+    ),
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+    visualDensity: VisualDensity.compact,
+    textStyle: AppType.bodySmall,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(AppRadii.full),
+    ),
+  );
 }
 
 class _SettingsSwitch extends StatelessWidget {

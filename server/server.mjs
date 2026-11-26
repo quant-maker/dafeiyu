@@ -3,7 +3,9 @@
 import http from 'node:http'
 import https from 'node:https'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
+import { spawn, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -186,9 +188,117 @@ function proxyComfy(req, res) {
   req.pipe(upstream)
 }
 
+// ---------------------------------------------------------------------------
+// ComfyUI lifecycle. The page (and the phone) can start/stop the engine on the
+// desktop instead of walking over to run a .bat by hand. This only works when
+// this server runs on the same machine as ComfyUI; override the defaults with
+// COMFY_DIR / COMFY_START / COMFY_STOP when the install lives elsewhere.
+const COMFY_PORT = Number(new URL(COMFY).port || 8188)
+const COMFY_DIR = process.env.COMFY_DIR || path.join(os.homedir(), 'WorkSpace', 'sexy')
+const COMFY_START = process.env.COMFY_START || path.join(COMFY_DIR, 'run_comfy_hidden.cmd')
+const COMFY_STOP_FLAG = path.join(COMFY_DIR, 'stop.flag')
+
+function comfyPing(timeout = 1500) {
+  return new Promise((resolve) => {
+    const req = http.get(
+      { host: '127.0.0.1', port: COMFY_PORT, path: '/system_stats', timeout },
+      (res) => {
+        res.resume()
+        resolve(res.statusCode === 200)
+      },
+    )
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(false)
+    })
+    req.on('error', () => resolve(false))
+  })
+}
+
+function comfyListenerPids() {
+  try {
+    const out = execFileSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true })
+    const pids = new Set()
+    for (const line of out.split(/\r?\n/)) {
+      if (!new RegExp(`:${COMFY_PORT}(?!\\d)`).test(line)) continue
+      if (!/LISTENING/i.test(line)) continue
+      const parts = line.trim().split(/\s+/)
+      const pid = parts[parts.length - 1]
+      if (/^\d+$/.test(pid)) pids.add(pid)
+    }
+    return [...pids]
+  } catch {
+    return []
+  }
+}
+
+async function comfyCtl(req, res, action) {
+  const send = (code, body) => {
+    res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+    res.end(JSON.stringify(body))
+  }
+  const running = await comfyPing()
+  if (action === 'health') {
+    return send(200, {
+      running,
+      port: COMFY_PORT,
+      dir: COMFY_DIR,
+      startable: fs.existsSync(COMFY_START),
+    })
+  }
+  if (action === 'start') {
+    if (running) return send(200, { running: true, started: false })
+    if (!fs.existsSync(COMFY_START)) {
+      return send(501, { running: false, started: false, error: `找不到启动脚本：${COMFY_START}` })
+    }
+    try {
+      fs.rmSync(COMFY_STOP_FLAG, { force: true })
+    } catch {}
+    // Detached so the supervisor outlives this request and keeps ComfyUI alive.
+    const child = spawn('cmd.exe', ['/c', COMFY_START], {
+      cwd: COMFY_DIR,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    child.unref()
+    return send(202, { running: false, started: true })
+  }
+  if (action === 'stop') {
+    try {
+      fs.writeFileSync(COMFY_STOP_FLAG, 'stop')
+    } catch {}
+    const pids = comfyListenerPids()
+    for (const pid of pids) {
+      try {
+        execFileSync('taskkill', ['/PID', pid, '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+      } catch {}
+    }
+    // Same handshake as 停止大肥鱼.cmd: the flag tells the supervisor not to
+    // relaunch, and it is cleared once the child has had time to exit.
+    setTimeout(() => {
+      try {
+        fs.rmSync(COMFY_STOP_FLAG, { force: true })
+      } catch {}
+    }, 5000)
+    return send(200, { running: false, stopped: pids.length > 0 })
+  }
+  return send(404, { error: 'unknown comfy action' })
+}
+
+function handleComfyCtl(req, res) {
+  const action = (req.url || '').replace(/^\/comfyctl\/?/, '').split('?')[0]
+  if (req.method === 'GET' && action === 'health') return comfyCtl(req, res, action)
+  if (req.method === 'POST' && (action === 'start' || action === 'stop')) {
+    return comfyCtl(req, res, action)
+  }
+  res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('unknown comfyctl action')
+}
+
 const server = http.createServer((req, res) => {
   if ((req.url || '').startsWith('/v1/') || req.url === '/v1') return proxyApi(req, res)
-if ((req.url || '').startsWith('/comfy')) return proxyComfy(req, res)
+  if ((req.url || '').startsWith('/comfyctl')) return handleComfyCtl(req, res)
+  if ((req.url || '').startsWith('/comfy')) return proxyComfy(req, res)
   if ((req.url || '').startsWith('/fetch')) return fetchPage(req, res)
   if (req.url === '/healthz') return res.writeHead(200).end('ok')
   return serveStatic(req, res)

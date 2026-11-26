@@ -21,6 +21,7 @@ class ChatAppBar extends StatelessWidget implements PreferredSizeWidget {
     this.avatarBase64,
     required this.onFootprints,
     required this.onComfy,
+    this.comfyOnline,
     required this.onNewChat,
     required this.onSettings,
   });
@@ -33,6 +34,10 @@ class ChatAppBar extends StatelessWidget implements PreferredSizeWidget {
   final String? avatarBase64;
   final VoidCallback onFootprints;
   final VoidCallback onComfy;
+
+  /// Null while unknown; true when ComfyUI answers (dot on the draw button).
+  final bool? comfyOnline;
+
   final VoidCallback onNewChat;
   final VoidCallback onSettings;
 
@@ -115,6 +120,9 @@ class ChatAppBar extends StatelessWidget implements PreferredSizeWidget {
               icon: Icons.draw_rounded,
               tooltip: '画画（ComfyUI）',
               onPressed: onComfy,
+              badgeColor: comfyOnline == null
+                  ? null
+                  : (comfyOnline! ? AppPalette.mint : AppPalette.danger),
             ),
             const SizedBox(width: 4),
             _ActionIcon(
@@ -145,6 +153,7 @@ class _ActionIcon extends StatelessWidget {
     required this.tooltip,
     required this.onPressed,
     this.accent = false,
+    this.badgeColor,
   });
 
   final IconData icon;
@@ -152,9 +161,12 @@ class _ActionIcon extends StatelessWidget {
   final VoidCallback? onPressed;
   final bool accent;
 
+  /// Small dot in the corner; null hides it.
+  final Color? badgeColor;
+
   @override
   Widget build(BuildContext context) {
-    return IconButton(
+    Widget button = IconButton(
       tooltip: tooltip,
       onPressed: onPressed,
       icon: Icon(
@@ -181,6 +193,27 @@ class _ActionIcon extends StatelessWidget {
           ),
         ),
       ),
+    );
+    final Color? dot = badgeColor;
+    if (dot == null) return button;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: <Widget>[
+        button,
+        Positioned(
+          right: 1,
+          bottom: 1,
+          child: Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: dot,
+              shape: BoxShape.circle,
+              border: Border.all(color: AppPalette.surface, width: 1.5),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

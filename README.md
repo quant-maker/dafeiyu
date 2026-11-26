@@ -47,6 +47,27 @@ node server/server.mjs       # 打开 http://127.0.0.1:8090
 
 页面的 Base URL 会自动取当前 origin + `/v1`，直接走本地反代，不会被 CORS 拦。
 
+### ComfyUI 一键启动（仅 Web）
+
+`server.mjs` 多了 `/comfyctl/{health,start,stop}`：会话页长按画笔、或者绘画页右上角 ▶，
+就能在这台电脑上启停 ComfyUI，不用再回桌面双击 bat。默认找
+`%USERPROFILE%\WorkSpace\sexy\run_comfy_hidden.cmd`（你们那套 supervisor），
+装在别处就用环境变量改：
+
+```powershell
+$env:COMFY_DIR   = 'D:\ComfyUI'                       # 安装目录
+$env:COMFY_START = 'D:\ComfyUI\run_hidden.cmd'        # 启动脚本（会常驻）
+node server/server.mjs
+```
+
+停止时服务端会写 `stop.flag` 并杀掉 8188 的监听进程，和 `停止大肥鱼.cmd` 的握手方式一致。
+
+内置了两套文生图工作流（设置 → ComfyUI 一键切换）：**SD-Turbo** 是默认值，4 步出图、CPU 也能跑；
+**Z-Image Turbo** 8 步、质量更好，需要显卡和 `z_image_turbo_bf16` / `qwen_3_4b` / `ae` 三个模型文件。
+
+提示词中英文都能写：这类模型的文本编码器只认英文，中文会先由对话模型翻成英文再送进 ComfyUI
+（否则出来就是那张灰糊糊的「水墨画」）。翻译结果按原文缓存，同一句话不会重复花 token。
+
 ### Android（CI）
 
 推 `v*` tag 或在 Actions 手动触发 `build` 工作流，会产出 arm64 APK 并挂到 Release，无需本地构建。

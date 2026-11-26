@@ -11,6 +11,7 @@ import '../ui/surfaces.dart';
 import '../ui/tokens.dart';
 import 'art_store.dart';
 import 'comfy.dart';
+import 'engine.dart';
 
 /// A phone-sized console for the ComfyUI running on the desk computer.
 class ComfyPage extends StatefulWidget {
@@ -21,11 +22,22 @@ class ComfyPage extends StatefulWidget {
   /// generated PNG bytes back to the host screen.
   final void Function(Uint8List bytes)? onUseAsAvatar;
 
+  /// Opens Settings (ComfyUI section) and returns the saved values, so this
+  /// page can pick up a workflow without being reopened.
+  final Future<ComfyConfig?> Function()? onEditConfig;
+
+  /// SD-Turbo's text encoder is English-only, so Chinese prompts have to be
+  /// rewritten before they reach ComfyUI. Provided by the host screen (this
+  /// page deliberately has no model settings of its own).
+  final Future<String> Function(String text)? onTranslatePrompt;
+
   const ComfyPage({
     super.key,
     required this.baseUrl,
     required this.workflowJson,
     this.onUseAsAvatar,
+    this.onEditConfig,
+    this.onTranslatePrompt,
   });
 
   @override
@@ -36,6 +48,9 @@ class _ComfyPageState extends State<ComfyPage> {
   final _prompt = TextEditingController();
   final _negative = TextEditingController();
 
+  late String _baseUrl;
+  late String _workflowJson;
+
   bool _online = false;
   bool _checking = true;
   bool _busy = false;
@@ -45,17 +60,23 @@ class _ComfyPageState extends State<ComfyPage> {
   List<Uint8List> _results = const [];
   ArtStore? _art;
 
+  ComfyEngineStatus _engine = const ComfyEngineStatus.unsupported();
+  bool _engineBusy = false;
+  String? _engineHint;
+
   static const List<String> _examples = <String>[
     '一只胖胖的小鲸鱼，坐在深夜窗边，暖色台灯',
     '雨夜的便利店门口，霓虹倒影',
     '毛绒质感的鲸鱼玩偶，柔光棚拍',
   ];
 
-  ComfyClient get _client => ComfyClient.resolved(widget.baseUrl, web: kIsWeb);
+  ComfyClient get _client => ComfyClient.resolved(_baseUrl, web: kIsWeb);
 
   @override
   void initState() {
     super.initState();
+    _baseUrl = widget.baseUrl;
+    _workflowJson = widget.workflowJson;
     _loadArt();
     _refresh();
   }
@@ -82,18 +103,85 @@ class _ComfyPageState extends State<ComfyPage> {
     setState(() => _checking = true);
     final online = await _client.ping();
     final queue = online ? await _client.queueLength() : 0;
+    final engine = await ComfyEngine.health();
     if (!mounted) return;
     setState(() {
       _online = online;
       _queue = queue;
+      _engine = engine;
       _checking = false;
     });
   }
 
+  /// Start (or stop) the engine on the desktop, then wait until ComfyUI
+  /// answers. Starting takes a while on CPU, so the hint counts down.
+  Future<void> _toggleEngine() async {
+    if (_engineBusy) return;
+    final bool stopping = _online || _engine.running;
+    setState(() {
+      _engineBusy = true;
+      _engineHint = stopping ? '正在停止 ComfyUI…' : '正在启动 ComfyUI…';
+    });
+    final String? err = stopping ? await ComfyEngine.stop() : await ComfyEngine.start();
+    if (!mounted) return;
+    if (err != null) {
+      setState(() {
+        _engineBusy = false;
+        _engineHint = err;
+      });
+      return;
+    }
+    if (stopping) {
+      await Future<void>.delayed(const Duration(seconds: 3));
+      if (!mounted) return;
+      setState(() {
+        _engineBusy = false;
+        _engineHint = '已停止';
+      });
+      await _refresh();
+      return;
+    }
+    // Poll for up to a minute: the first start loads the model index.
+    for (int i = 0; i < 20; i++) {
+      await Future<void>.delayed(const Duration(seconds: 3));
+      if (!mounted) return;
+      if (await _client.ping()) {
+        setState(() {
+          _engineBusy = false;
+          _engineHint = '已启动';
+        });
+        await _refresh();
+        return;
+      }
+      if (!mounted) return;
+      setState(() => _engineHint = '正在启动 ComfyUI… ${(i + 1) * 3}s');
+    }
+    if (!mounted) return;
+    setState(() {
+      _engineBusy = false;
+      _engineHint = '还没起来：看看桌面上的启动窗口有没有报错';
+    });
+    await _refresh();
+  }
+
+  Future<void> _openSettings() async {
+    final fn = widget.onEditConfig;
+    if (fn == null) return;
+    final ComfyConfig? next = await fn();
+    if (!mounted || next == null) return;
+    setState(() {
+      _baseUrl = next.baseUrl;
+      _workflowJson = next.workflowJson;
+      if (next.workflowJson.trim().isNotEmpty) _error = null;
+      _engineHint = null;
+    });
+    await _refresh();
+  }
+
   Map<String, dynamic>? _parseWorkflow() {
-    if (widget.workflowJson.trim().isEmpty) return null;
+    if (_workflowJson.trim().isEmpty) return null;
     try {
-      return jsonDecodeMap(widget.workflowJson);
+      return jsonDecodeMap(_workflowJson);
     } catch (e) {
       setState(() => _error = '工作流 JSON 解析失败：$e');
       return null;
@@ -109,7 +197,7 @@ class _ComfyPageState extends State<ComfyPage> {
     }
     final wf = _parseWorkflow();
     if (wf == null) {
-      setState(() => _error = '还没配置工作流：去设置 → ComfyUI 粘贴「Save (API Format)」的 JSON');
+      setState(() => _error = '还没配置工作流：点右上角的齿轮，或下面「去设置」');
       return;
     }
 
@@ -121,10 +209,23 @@ class _ComfyPageState extends State<ComfyPage> {
     });
 
     try {
+      String promptForModel = text;
+      String negativeForModel = _negative.text.trim();
+      final Future<String> Function(String)? translate = widget.onTranslatePrompt;
+      if (translate != null) {
+        if (mounted) setState(() => _stage = '整理提示词…');
+        final String out = (await translate(text)).trim();
+        if (out.isNotEmpty) promptForModel = out;
+        if (negativeForModel.isNotEmpty) {
+          final String negOut = (await translate(negativeForModel)).trim();
+          if (negOut.isNotEmpty) negativeForModel = negOut;
+        }
+        if (mounted) setState(() => _stage = '提交…');
+      }
       final patched = patchWorkflow(
         wf,
-        prompt: text,
-        negative: _negative.text.trim(),
+        prompt: promptForModel,
+        negative: negativeForModel,
         seed: DateTime.now().millisecondsSinceEpoch % 1000000007,
       );
       final id = await _client.submit(patched);
@@ -197,11 +298,28 @@ class _ComfyPageState extends State<ComfyPage> {
         scrolledUnderElevation: 0,
         title: const Text('ComfyUI'),
         actions: [
+          if (ComfyEngine.supported)
+            GhostIconButton(
+              icon: _online || _engine.running
+                  ? Icons.stop_circle_outlined
+                  : Icons.play_circle_outline,
+              tooltip: _online || _engine.running
+                  ? '停止本机的 ComfyUI'
+                  : '启动本机的 ComfyUI',
+              color: _online || _engine.running ? AppPalette.mint : null,
+              onPressed: _engineBusy ? null : _toggleEngine,
+            ),
+          GhostIconButton(
+            icon: Icons.settings_rounded,
+            tooltip: 'ComfyUI 设置（工作流 / 地址）',
+            onPressed: widget.onEditConfig == null ? null : _openSettings,
+          ),
           GhostIconButton(
             icon: Icons.refresh,
             tooltip: '刷新状态',
             onPressed: _refresh,
           ),
+          const SizedBox(width: AppSpacing.s),
         ],
       ),
       body: ContentFrame(
@@ -209,6 +327,10 @@ class _ComfyPageState extends State<ComfyPage> {
           padding: const EdgeInsets.fromLTRB(0, 12, 0, 40),
           children: [
             _statusCard(),
+            if (_workflowJson.trim().isEmpty) ...[
+              const SizedBox(height: AppSpacing.m),
+              _setupCard(),
+            ],
             const SizedBox(height: AppSpacing.l),
             TextField(
               controller: _prompt,
@@ -217,6 +339,7 @@ class _ComfyPageState extends State<ComfyPage> {
               decoration: const InputDecoration(
                 labelText: '提示词',
                 hintText: '一只胖胖的小鲸鱼，坐在深夜窗边，暖色台灯…',
+                helperText: '中文会自动翻成英文再画（这类模型的文本编码器只认英文）',
               ),
             ),
             const SizedBox(height: AppSpacing.m),
@@ -613,6 +736,66 @@ class _ComfyPageState extends State<ComfyPage> {
     );
   }
 
+  Widget _setupCard() {
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.l),
+      decoration: BoxDecoration(
+        color: AppPalette.warm.withValues(alpha: .08),
+        borderRadius: BorderRadius.circular(AppRadii.l),
+        border: Border.all(color: AppPalette.warm.withValues(alpha: .30)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              const Icon(Icons.rule_folder_outlined, size: 18, color: AppPalette.warm),
+              const SizedBox(width: AppSpacing.s),
+              Expanded(
+                child: Text(
+                  '还没有配置工作流',
+                  style: AppType.subtitle.copyWith(color: AppPalette.text1),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '在 ComfyUI 里用「Save (API Format)」导出 JSON，粘到设置 → ComfyUI；'
+            '设置里也有一个内置的 SD-Turbo 示例可以先用起来。',
+            style: AppType.caption.copyWith(color: AppPalette.text3),
+          ),
+          const SizedBox(height: AppSpacing.m),
+          Wrap(
+            spacing: AppSpacing.s,
+            runSpacing: AppSpacing.s,
+            children: <Widget>[
+              FilledButton.icon(
+                key: const ValueKey('comfy-open-settings'),
+                onPressed: widget.onEditConfig == null ? null : _openSettings,
+                icon: const Icon(Icons.settings_rounded, size: 16),
+                label: const Text('去设置'),
+              ),
+              if (ComfyEngine.supported && !(_online || _engine.running))
+                OutlinedButton.icon(
+                  key: const ValueKey('comfy-start-engine'),
+                  onPressed: _engineBusy ? null : _toggleEngine,
+                  icon: _engineBusy
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 1.6),
+                        )
+                      : const Icon(Icons.play_arrow_rounded, size: 16),
+                  label: const Text('启动 ComfyUI'),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _statusCard() {
     final Color color = _checking
         ? AppPalette.text3
@@ -649,14 +832,41 @@ class _ComfyPageState extends State<ComfyPage> {
           ),
           const SizedBox(height: AppSpacing.xs),
           Text(
-            widget.baseUrl,
+            _baseUrl,
             style: AppType.caption.copyWith(color: AppPalette.text3),
           ),
           if (!_checking && !_online) ...[
             const SizedBox(height: AppSpacing.xs),
             Text(
-              '检查电脑上的 ComfyUI 是否开着、同一局域网',
+              ComfyEngine.supported
+                  ? '电脑上的 ComfyUI 没开。可以点右上角的 ▶ 或下面按钮直接启动。'
+                  : '检查电脑上的 ComfyUI 是否开着、同一局域网',
               style: AppType.caption.copyWith(color: AppPalette.warm),
+            ),
+            if (ComfyEngine.supported) ...[
+              const SizedBox(height: AppSpacing.s),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  key: const ValueKey('comfy-status-start'),
+                  onPressed: _engineBusy ? null : _toggleEngine,
+                  icon: _engineBusy
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 1.6),
+                        )
+                      : const Icon(Icons.play_arrow_rounded, size: 16),
+                  label: const Text('启动 ComfyUI'),
+                ),
+              ),
+            ],
+          ],
+          if (_engineHint != null) ...[
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              _engineHint!,
+              style: AppType.caption.copyWith(color: AppPalette.text3),
             ),
           ],
         ],
