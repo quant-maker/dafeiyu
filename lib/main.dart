@@ -18,6 +18,7 @@ import 'companion/feed_fetch.dart';
 import 'companion/feed_inbox.dart';
 import 'companion/heartbeat.dart';
 import 'companion/skills.dart';
+import 'companion/usage.dart';
 import 'companion/initiative.dart';
 import 'companion/initiative_budget.dart';
 import 'comfy/comfy.dart';
@@ -703,6 +704,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// What she has actually practised, and how good she has become at it.
   SkillBook _skills = SkillBook.empty();
 
+  /// 她的「精神口粮」账本：接口报多少就记多少。
+  UsageMeter _usage = UsageMeter();
+
   /// The skill that just levelled up, shown briefly as a small banner.
   String? _skillUp;
   Timer? _skillBannerTimer;
@@ -780,6 +784,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (mounted) setState(() => _skills = book);
     }).catchError((Object e) {
       debugPrint('[feiyu] skills load FAILED: $e');
+    });
+    UsageMeter.load().then((meter) {
+      if (mounted) setState(() => _usage = meter);
+    }).catchError((Object e) {
+      debugPrint('[feiyu] usage load FAILED: $e');
     });
     Settings.load().then((s) {
       debugPrint('[feiyu] settings loaded base=${s.baseUrl} model=${s.model} keyLen=${s.apiKey.length}');
@@ -1019,6 +1028,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           initialNextCheck: _nextCheckLabel,
           initialHeartbeat: _heartbeatLine(),
           initialSkills: _skills.all,
+          initialUsage: _usage.settingsLine,
           inboxCount: _inbox.unsharedCount,
           focusComfy: focusComfy,
         ),
@@ -1777,6 +1787,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       _timeContext(),
       _proactiveContext(s),
       if (_skills.promptLine().isNotEmpty) _skills.promptLine(),
+      if (_usage.promptLine.isNotEmpty) _usage.promptLine,
       '下面的对话记录可能跨越好几天，注意日期。'
           '如果对方问起以前聊过的事，先看记录和记忆；确实没有就直说没印象，不要编。',
       if (s.memoryEnabled) _factsPrompt,
@@ -1980,6 +1991,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       ..body = jsonEncode({
         'model': model,
         'stream': true,
+        // 让接口在最后一帧把用量带回来：她自己也该知道吃了多少。
+        'stream_options': const <String, dynamic>{'include_usage': true},
         'messages': convo,
         if (maxTokens != null) 'max_tokens': maxTokens,
         if (allowTools) 'tools': _toolSpecs,
@@ -2007,6 +2020,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         }
         try {
           final j = jsonDecode(data) as Map<String, dynamic>;
+          // 用量通常挂在最后一帧（choices 为空），所以要先于 delta 判断读掉。
+          _noteUsage(j['usage']);
           final delta = (j['choices'] as List?)?.first?['delta'] as Map?;
           if (delta == null) return;
 
@@ -3257,6 +3272,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     });
   }
 
+  /// 记账：接口报了多少就记多少，没报就什么也不写。
+  void _noteUsage(Object? raw) {
+    if (raw is! Map) return;
+    final input = raw['prompt_tokens'];
+    final output = raw['completion_tokens'];
+    if (input == null && output == null) return;
+    int asInt(Object? v) => v is num ? v.toInt() : int.tryParse('${v ?? ''}') ?? 0;
+    _usage.add(input: asInt(input), output: asInt(output));
+    unawaited(_usage.save());
+  }
+
   /// 英文直接放过；中文先翻译。翻译失败就退回原文（至少和以前一样）。
   Future<String> _englishImagePrompt(String text) async {
     final out = await _imageText.english(text);
@@ -3296,6 +3322,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       throw StateError('memory chat HTTP ${res.statusCode}');
     }
     final j = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    _noteUsage(j['usage']);
     final msg = ((j['choices'] as List).first as Map)['message'] as Map;
     return (msg['content'] as String? ?? '').trim();
   }
@@ -3784,6 +3811,9 @@ class SettingsPage extends StatefulWidget {
 
   /// 她的技能库（等级、熟练度），只读展示。
   final List<Skill> initialSkills;
+
+  /// 精神口粮的用量摘要，只读展示。
+  final String initialUsage;
   final int inboxCount;
 
   /// Opened from the drawing page: jump straight to the ComfyUI card instead
@@ -3803,6 +3833,7 @@ class SettingsPage extends StatefulWidget {
     this.initialNextCheck,
     this.initialHeartbeat,
     this.initialSkills = const <Skill>[],
+    this.initialUsage = '',
     this.inboxCount = 0,
     this.focusComfy = false,
   });
@@ -5463,6 +5494,11 @@ class _SettingsPageState extends State<SettingsPage> {
                 'model=${_model.text}\n'
                 'key长度=${widget.initial.apiKey.length}（注入源长度 ${kKeyInjected ? kInjectedKey.length : 0}）',
                 style: AppType.mono.copyWith(color: AppPalette.text3),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                '她的精神口粮：${widget.initialUsage}',
+                style: AppType.caption.copyWith(color: AppPalette.text3),
               ),
               const SizedBox(height: 14),
               Text(
