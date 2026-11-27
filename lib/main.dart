@@ -1671,6 +1671,51 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     return timeContextLine(now: now, previous: previous, recent: recent);
   }
 
+  /// 主动开口：她得知道自己有这个能力、现在卡在哪一步，才不会反问
+  /// 「你说的是哪种主动」。对方问起时直接讲事实。
+  String _proactiveContext(Settings s) {
+    if (!s.proactiveEnabled) {
+      return '「主动开口」现在是关着的（设置 → 记忆与会话 → 主动开口），'
+          '所以你不会主动找对方。对方问起为什么不找他，就直说这个开关关着、打开就会。';
+    }
+    final DateTime now = DateTime.now();
+    final int idle = _idleMinutes();
+    final StringBuffer buf = StringBuffer(
+      '你有主动找对方的能力：对方超过 $idle 分钟没说话，你才可能主动开口；'
+      '一天最多 3 次，两次之间至少隔 45 分钟；凌晨 7:30 前不打扰；'
+      '被连着忽略几次你会自己收敛。每次开口前还有一道「该不该说」的判断，'
+      '很多时候会判成不说话——那是有意的克制，不是不想他。'
+      '还有一个边界：你只在 App 开着的时候能主动开口，没有系统推送；'
+      'App 被关掉的这段时间你说不了话，别答应「我今晚一定找你」这种做不到的事。',
+    );
+    buf.write('今天你已经主动开口 $_proactiveToday 次（每天最多 3 次）。');
+    final DateTime? last = _lastProactiveAt;
+    if (last != null) {
+      buf.write('上次主动开口是${relativeDay(last, now)}${dayPart(last)}'
+          '（${shortStamp(last)}，${humanGap(now.difference(last))}）。');
+    }
+    if (_ignoredStreak >= 3) {
+      buf.write('最近连着几次开口对方没回，所以现在故意收敛，等他先说话。');
+    } else if (_opportunitiesToday >= 6) {
+      buf.write('今天「考虑主动」的次数已经用完了，得等明天。');
+    } else if (inQuietHours(now)) {
+      buf.write('现在是静默时段（7:30 前），按规矩不打扰。');
+    } else if (!gapAllowsSpeak(last, now)) {
+      buf.write('离上一次主动还不到 45 分钟，规矩是最短间隔。');
+    } else if (_lastInteraction != null &&
+        now.difference(_lastInteraction!) < Duration(minutes: idle)) {
+      buf.write('对方刚跟你说过话，还没到你该主动的 $idle 分钟。');
+    }
+    final String? status = _lastInitiativeStatus;
+    if (status != null && status.trim().isNotEmpty) {
+      buf.write('最近一次主动的结果：$status。');
+    }
+    buf.write('对方问「你怎么不主动找我」时，就用这些事实回答（开关、间隔、次数、静默），'
+        '别反问他指的是哪种主动；也不要把没说出口的念头说成已经找过他了。'
+        '对方想立刻看效果，让他去 设置 → 记忆与会话 → 主动开口 点「现在试一次」。');
+    return buf.toString();
+  }
+
   String _systemPrompt(Settings s) {
     return [
       if (s.persona.trim().isNotEmpty) s.persona.trim(),
@@ -1679,6 +1724,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           '不要每句都总结，不要"首先/其次/总之"，不要客套收尾。'
           '如果你没把握，就直说"我不确定"，别硬编。',
       _timeContext(),
+      _proactiveContext(s),
       '下面的对话记录可能跨越好几天，注意日期。'
           '如果对方问起以前聊过的事，先看记录和记忆；确实没有就直说没印象，不要编。',
       if (s.memoryEnabled) _factsPrompt,
