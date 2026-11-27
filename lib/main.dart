@@ -1706,7 +1706,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
     buf.write('今天已经心跳 ${_heart.beatsToday} 次。');
     if (_heart.lastNote.trim().isNotEmpty) {
-      buf.write('刚才${_heart.lastNote}。');
+      final browse = _heart.lastBrowseAt;
+      final age = browse == null ? '' : '（${humanGap(now.difference(browse))}）';
+      buf.write('上次出门逛到：${_heart.lastNote}$age。');
     }
     final familiar = _heart.familiar.take(3).toList();
     if (familiar.isNotEmpty) {
