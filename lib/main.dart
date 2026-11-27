@@ -25,6 +25,7 @@ import 'comfy/prompt.dart';
 import 'comfy/workflows.dart';
 import 'feeds/footprints.dart';
 import 'providers.dart';
+import 'time_context.dart';
 import 'feeds/footprints_page.dart';
 import 'memory/archive.dart';
 import 'memory/curator.dart';
@@ -1604,16 +1605,52 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     },
   ];
 
+  /// 现在几点、距上次说话多久、最近几条消息是什么时候。
+  ///
+  /// 对话记录本身不带时间戳，模型只靠这一小段建立时间感：否则凌晨会问早上好，
+  /// 三天前的事会被说成「刚才」。
+  String _timeContext() {
+    final DateTime now = DateTime.now();
+
+    // The turn being answered is already in _messages. Skip its user message so
+    // "上次说话" means the previous exchange, not the line we are answering.
+    // A proactive nudge has no new user message, so the last real message is the
+    // reference point there.
+    int last = _messages.length - 1;
+    while (last >= 0 &&
+        _messages[last].content.trim().isEmpty &&
+        _messages[last].imageBase64 == null) {
+      last--;
+    }
+    int cut = last + 1;
+    if (last >= 0 && _messages[last].role == 'user') cut = last;
+    DateTime? previous;
+    for (int i = cut - 1; i >= 0; i--) {
+      final Message m = _messages[i];
+      if (m.content.trim().isNotEmpty || m.imageBase64 != null) {
+        previous = m.at;
+        break;
+      }
+    }
+
+    final List<RecentTurn> recent = <RecentTurn>[
+      for (final Message m in _messages)
+        if (m.content.trim().isNotEmpty)
+          RecentTurn(m.at, mine: m.role != 'user', text: m.content),
+    ];
+
+    return timeContextLine(now: now, previous: previous, recent: recent);
+  }
+
   String _systemPrompt(Settings s) {
-    final now = DateTime.now();
-    final today = '${now.year}年${now.month}月${now.day}日 ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
     return [
       if (s.persona.trim().isNotEmpty) s.persona.trim(),
       '说话方式：像在微信上聊天，不要写文章。'
           '一次最多 1~2 句，口语、短句；想说三件事就分成三条发，用 ||| 分隔（每条 1~2 句，不要编号）。'
           '不要每句都总结，不要"首先/其次/总之"，不要客套收尾。'
           '如果你没把握，就直说"我不确定"，别硬编。',
-      '现在是 $today。下面的对话记录可能跨越好几天，注意日期。'
+      _timeContext(),
+      '下面的对话记录可能跨越好几天，注意日期。'
           '如果对方问起以前聊过的事，先看记录和记忆；确实没有就直说没印象，不要编。',
       if (s.memoryEnabled) _factsPrompt,
       if (s.memoryEnabled) _digest,
