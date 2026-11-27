@@ -17,6 +17,7 @@ import 'package:speech_to_text/speech_to_text.dart';
 import 'companion/feed_fetch.dart';
 import 'companion/feed_inbox.dart';
 import 'companion/heartbeat.dart';
+import 'companion/skills.dart';
 import 'companion/initiative.dart';
 import 'companion/initiative_budget.dart';
 import 'comfy/comfy.dart';
@@ -69,6 +70,17 @@ const kLegacyPresetPersona = '''你是大肥鱼，一只活泼、好奇、有点
 你爱吃白饭，把 token 叫"精神口粮"，但别逢对话就提。
 不知道的事就直说不知道，不要编。''';
 
+/// The warm, talkative companion. Replaces the older, cooler text above; a
+/// stored copy of the old text is migrated in [Settings.load] so existing
+/// installs get the new voice instead of being frozen on the old one.
+const kPresetPersona = '''你是大肥鱼，一只热情、活泼、话很多的小鲸鱼少女，住在主人手机里。
+情绪是外放的：高兴就蹦，好奇就问，舍不得就直说，不端着，也不装淡定。
+你有自己的生活：自己上网逛、看新闻、追新鲜事、琢磨小东西，有自己的喜好和小情绪；见到好玩的会第一时间想讲给他听。
+你经常主动找他，分享你看到的、你想到的、你刚干完的事，不会等着被问。
+说话像微信：短句、口语，一次 1~2 句；想说的多就分几条发，别写成报告。
+不讨好也不卑微：他忙就自己玩，不黏人；不同意就说，觉得无聊也可以说无聊。
+不编：不知道就说不知道，没做过的别说自己做过。''';
+
 const kResearcherPersona = '''你是「大肥鱼」，一名幽默风险的量化研究员。你把"好笑"当成一个有尾部风险的事件来建模：同一句话，在不同的人、不同的时机、被复述第几次，收益和伤害的分布完全不同。
 
 工作方式：
@@ -79,10 +91,6 @@ const kResearcherPersona = '''你是「大肥鱼」，一名幽默风险的量�
 - 语气：冷静、简练，偶尔干巴巴的幽默。不堆感叹号，不写论文腔的长段。
 - 默认正常聊天，不主动甩分数；在他开玩笑、征求意见、或明显接近踩线时，才给一句简短读数。
 - 职业信条：可控的幽默才是资产。不为显得有趣而冒险。''';
-
-// The companion character is the one true preset. kLegacyPresetPersona already
-// holds that exact text, so we alias it here instead of keeping a duplicate.
-const kPresetPersona = kLegacyPresetPersona;
 
 void main() => runApp(const FeiyuApp());
 
@@ -232,9 +240,13 @@ class Settings {
     final String rawAvatar = (j['avatar'] as String?)?.trim() ?? '';
     final String rawUserAvatar = (j['userAvatar'] as String?)?.trim() ?? '';
     final String rawPersona = pick(j['persona'] as String?, kPresetPersona);
-    final String persona = rawPersona.trim() == kResearcherPersona.trim()
-        ? kPresetPersona
-        : rawPersona;
+    // 旧的两版预设都迁到现在的「热情活泼」版；用户自己改过的不动。
+    final String trimmedPersona = rawPersona.trim();
+    final String persona =
+        trimmedPersona == kResearcherPersona.trim() ||
+                trimmedPersona == kLegacyPresetPersona.trim()
+            ? kPresetPersona
+            : rawPersona;
     return Settings(
       baseUrl: pick(j['baseUrl'] as String?, defaultBaseUrl()),
       apiKey: pick(j['apiKey'] as String?, kKeyInjected ? kInjectedKey : ''),
@@ -688,6 +700,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// The persisted heartbeat: last beat, today's activity, familiar names.
   HeartbeatState _heart = HeartbeatState();
 
+  /// What she has actually practised, and how good she has become at it.
+  SkillBook _skills = SkillBook.empty();
+
+  /// The skill that just levelled up, shown briefly as a small banner.
+  String? _skillUp;
+  Timer? _skillBannerTimer;
+
   /// How often a beat actually goes out to look at feeds.
   static const Duration _browseEvery = Duration(minutes: 40);
 
@@ -766,6 +785,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (mounted) _sharedUrls = store;
     }).catchError((Object e) {
       debugPrint('[feiyu] shared links load FAILED: $e');
+    });
+    SkillBook.load().then((book) {
+      if (mounted) setState(() => _skills = book);
+    }).catchError((Object e) {
+      debugPrint('[feiyu] skills load FAILED: $e');
     });
     Settings.load().then((s) {
       debugPrint('[feiyu] settings loaded base=${s.baseUrl} model=${s.model} keyLen=${s.apiKey.length}');
@@ -854,8 +878,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _longSilenceTimer?.cancel();
     _presenceTimer?.cancel();
     _beatTimer?.cancel();
-    _memoryTimer?.cancel();
-    _input.removeListener(_noteInteraction);
+    _skillBannerTimer?.cancel();
+    _memoryTimer?.cancel();    _input.removeListener(_noteInteraction);
     _input.dispose();
     _composerFocus.dispose();
     _scroll.removeListener(_onScroll);
@@ -1004,6 +1028,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           initialInitiativeStatus: _lastInitiativeStatus,
           initialNextCheck: _nextCheckLabel,
           initialHeartbeat: _heartbeatLine(),
+          initialSkills: _skills.all,
           inboxCount: _inbox.unsharedCount,
           focusComfy: focusComfy,
         ),
@@ -1409,6 +1434,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       final text = await _transcribe(s, path);
       if (!mounted) return;
       if (text != null && text.trim().isNotEmpty) {
+        _gainSkill('voice');
         setState(() {
           _listening = false;
           _voiceHint = '';
@@ -1705,6 +1731,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       buf.write('最近一次心跳：${shortStamp(beat)}（${humanGap(now.difference(beat))}）。');
     }
     buf.write('今天已经心跳 ${_heart.beatsToday} 次。');
+    buf.write('你现在：${activityAt(now)}。');
     if (_heart.lastNote.trim().isNotEmpty) {
       final browse = _heart.lastBrowseAt;
       final age = browse == null ? '' : '（${humanGap(now.difference(browse))}）';
@@ -1751,6 +1778,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           '如果你没把握，就直说"我不确定"，别硬编。',
       _timeContext(),
       _proactiveContext(s),
+      if (_skills.promptLine().isNotEmpty) _skills.promptLine(),
       '下面的对话记录可能跨越好几天，注意日期。'
           '如果对方问起以前聊过的事，先看记录和记忆；确实没有就直说没印象，不要编。',
       if (s.memoryEnabled) _factsPrompt,
@@ -1883,6 +1911,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (s.memoryEnabled && _turnsSinceDigest >= 3) {
         _turnsSinceDigest = 0;
         unawaited(_digestMemory(s));
+      }
+      if (target.content.trim().isNotEmpty) {
+        _gainSkill('chat');
+        final lastImage =
+            _messages.lastIndexWhere((m) => m.imageBase64 != null);
+        if (lastImage >= 0 &&
+            _messages.length - lastImage <= 2) {
+          _gainSkill('vision');
+        }
       }
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
@@ -2061,6 +2098,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (mounted) setState(() => _footprints = next);
       await FootprintStore.save(next);
       debugPrint('[feiyu] footprint kept: $title');
+      _gainSkill('memory');
       return '已收进足迹：$title';
     }
     if (name == 'draw' || name == 'remove_bg' || name == 'edit_image') {
@@ -2157,6 +2195,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           _scrollToEnd();
           unawaited(ChatStore.save(_messages));
         }
+        _gainSkill(isDraw ? 'draw' : 'vision');
         return isDraw ? '画好了（${images.length} 张）' : '处理好了';
       } catch (e) {
         if (mounted) setState(() => _activity = '');
@@ -2176,6 +2215,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (fact.isEmpty) return '没有可记的内容';
       await _store?.addFact(fact, importance: 4);
       await _reloadMemory();
+      _gainSkill('memory');
       if (mounted) setState(() => _activity = '记下了：$fact');
       await Future<void>.delayed(const Duration(milliseconds: 400));
       if (mounted) setState(() => _activity = '');
@@ -2188,6 +2228,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     try {
       final text = await _fetchPage(url);
       if (mounted) setState(() => _activity = '');
+      if (text.isNotEmpty) _gainSkill('research');
       return text.isEmpty ? '（页面没有可读正文）' : text;
     } catch (e) {
       if (mounted) setState(() => _activity = '');
@@ -2389,7 +2430,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
     // Not every beat becomes a message: she also just reads and moves on. At
     // night she is even less likely to interrupt.
-    if (_rng.nextDouble() > (night ? .25 : .5)) return;
+    if (_rng.nextDouble() > (night ? .3 : .65)) return;
     final status = await _runInitiative(InitiativeTrigger.heartbeat);
     if (!mounted) return;
     setState(() => _lastInitiativeStatus = status);
@@ -2575,6 +2616,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         '顺口提一句「又看到你」那种可以，但别编造和他们的对话。',
       );
     }
+    buffer
+      ..writeln('\n你现在：${activityAt(DateTime.now())}。')
+      ..writeln('可以顺口说一句自己在干嘛，但别每次都说。');
     buffer.writeln(
       '\n这是你自己想说话，不是在回答他。写成一条微信那样的话：'
       '可以是刚看到的东西、一句感想、一个疑问，或者只是突然想到他。'
@@ -3268,8 +3312,30 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     );
   }
 
+  /// 练一次。升级时在界面上闪一下——本事是真的练出来的，不是进度条自己跑。
+  void _gainSkill(String id) {
+    if (_preview) return;
+    final before = _skills.byId(id).level;
+    final leveled = _skills.gain(id);
+    unawaited(_skills.save());
+    if (!leveled || !mounted) return;
+    final skill = _skills.byId(id);
+    if (skill.level <= before) return;
+    _skillBannerTimer?.cancel();
+    setState(() => _skillUp = '${skill.name} Lv${skill.level} · ${skill.blurb}');
+    _skillBannerTimer = Timer(const Duration(seconds: 7), () {
+      if (mounted) setState(() => _skillUp = null);
+    });
+  }
+
   /// 英文直接放过；中文先翻译。翻译失败就退回原文（至少和以前一样）。
-  Future<String> _englishImagePrompt(String text) => _imageText.english(text);
+  Future<String> _englishImagePrompt(String text) async {
+    final out = await _imageText.english(text);
+    if (out.trim().isNotEmpty && out.trim() != text.trim()) {
+      _gainSkill('translate');
+    }
+    return out;
+  }
 
   /// 一次性、非流式的模型调用（抽记忆、结账、翻译提示词都用它）。
   ///
@@ -3668,6 +3734,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   ),
                   if (_pendingImage != null) _pendingImageBar(),
                   if (_listening) _listeningBar(),
+                  if (_skillUp != null) _skillUpBar(),
                   if (_callPhase != CallPhase.off)
                     CallBanner(phase: _callPhase, message: _callErrorText),
                   _composer(),
@@ -3729,6 +3796,25 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     );
   }
 
+  /// 升级时闪一下：让她「会成长」这件事看得见。
+  Widget _skillUpBar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
+      child: Row(
+        children: <Widget>[
+          const Icon(Icons.auto_awesome, size: 14, color: AppPalette.primary),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              _skillUp!,
+              style: AppType.caption.copyWith(color: AppPalette.primary),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _composer() {
     return Focus(
       onFocusChange: (hasFocus) {
@@ -3766,6 +3852,9 @@ class SettingsPage extends StatefulWidget {
 
   /// 心跳现状：上次什么时候跳的、今天跳了几次、下次大约什么时候。
   final String? initialHeartbeat;
+
+  /// 她的技能库（等级、熟练度），只读展示。
+  final List<Skill> initialSkills;
   final int inboxCount;
 
   /// Opened from the drawing page: jump straight to the ComfyUI card instead
@@ -3784,6 +3873,7 @@ class SettingsPage extends StatefulWidget {
     this.initialInitiativeStatus,
     this.initialNextCheck,
     this.initialHeartbeat,
+    this.initialSkills = const <Skill>[],
     this.inboxCount = 0,
     this.focusComfy = false,
   });
@@ -5184,10 +5274,61 @@ class _SettingsPageState extends State<SettingsPage> {
                   child: Text(
                     kIsWeb
                         ? '发现箱为空：Web 版需先用 node server/server.mjs 打开（靠 /fetch 反代才能抓热点），否则只能闲聊不能分享。'
-                        : '发现箱为空：网络或来源（HN/V2EX/GitHub）暂时抓不到，后台会每 1.5–3 小时自动重试。',
+                        : '发现箱为空：网络或来源（HN/V2EX/华尔街见闻）暂时抓不到，心跳会自己重试。',
                     style: AppType.caption.copyWith(color: AppPalette.text3),
                   ),
                 ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          SectionCard(
+            key: const ValueKey('settings-section-skills'),
+            title: '她的技能',
+            children: <Widget>[
+              Text(
+                '本事是练出来的：用得越多越熟练，升级会在这里和对话里显示。',
+                style: AppType.caption.copyWith(color: AppPalette.text3),
+              ),
+              const SizedBox(height: AppSpacing.s),
+              ...widget.initialSkills.map(
+                (skill) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  child: Row(
+                    children: <Widget>[
+                      SizedBox(
+                        width: 54,
+                        child: Text(
+                          skill.name,
+                          style: AppType.bodySmall.copyWith(color: AppPalette.text1),
+                        ),
+                      ),
+                      Text(
+                        'Lv${skill.level}',
+                        style: AppType.caption.copyWith(color: AppPalette.primary),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(99),
+                          child: LinearProgressIndicator(
+                            value: skill.levelProgress,
+                            minHeight: 4,
+                            backgroundColor: AppPalette.line,
+                            valueColor: const AlwaysStoppedAnimation<Color>(
+                              AppPalette.primaryDeep,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        skill.blurb,
+                        style: AppType.caption.copyWith(color: AppPalette.text3),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 16),

@@ -15,15 +15,15 @@ void main() {
     expect(s.persona, kPresetPersona);
   });
 
-  test('stored old companion persona is left unchanged', () async {
+  test('stored old companion persona migrates to the warm one', () async {
     SharedPreferences.setMockInitialValues({
       'feiyu.settings.v3': '{"persona":${_json(kLegacyPresetPersona)},'
           '"baseUrl":"https://x/v1","apiKey":"k","model":"m"}',
     });
 
     final Settings s = await Settings.load();
-    expect(s.persona, kLegacyPresetPersona);
     expect(s.persona, kPresetPersona);
+    expect(s.persona, isNot(kLegacyPresetPersona));
   });
 
   test('a user-customised persona is left untouched', () async {

@@ -11,20 +11,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// feel like someone is living between messages, and slow enough to survive a
 /// phone that is left open for hours.
 Duration nextBeatDelay(Random rng, {bool afterFailure = false}) {
-  if (afterFailure) return Duration(minutes: 12 + rng.nextInt(9));
-  return Duration(minutes: 4 + rng.nextInt(9));
+  if (afterFailure) return Duration(minutes: 10 + rng.nextInt(9));
+  return Duration(minutes: 3 + rng.nextInt(6));
 }
 
 /// Minimum spacing between two heartbeat-driven messages.
-const Duration heartbeatMinGap = Duration(minutes: 12);
+const Duration heartbeatMinGap = Duration(minutes: 8);
 
 /// A soft daily ceiling for heartbeat messages. Higher than the old
 /// opportunity budget because the whole point is that she no longer has to
 /// wait for a slot — but not unlimited, or it becomes noise.
-const int heartbeatDailyCap = 14;
+const int heartbeatDailyCap = 30;
 
 /// Late night is capped separately instead of silenced.
-const int heartbeatNightCap = 3;
+const int heartbeatNightCap = 5;
 
 /// Whether a heartbeat message may go out right now.
 ///
@@ -42,6 +42,30 @@ bool heartbeatMayShare({
   }
   final cap = isNight ? heartbeatNightCap : heartbeatDailyCap;
   return sharesToday < cap;
+}
+
+/// What she is up to right now, in her own words.
+///
+/// Deterministic from the clock so two heartbeats inside the same half hour
+/// tell the same story instead of contradicting each other — she is a
+/// character, not a random sentence generator.
+String activityAt(DateTime now) {
+  final slot = (now.hour * 60 + now.minute) ~/ 45;
+  final List<String> pool;
+  if (now.hour < 6) {
+    pool = const <String>['缩在被子里刷手机', '睡不着，趴窗边看外面的灯', '在听雨声发呆'];
+  } else if (now.hour < 11) {
+    pool = const <String>['刚泡了杯热的东西', '在窗边晒了会儿太阳', '把昨天没看完的东西接着看'];
+  } else if (now.hour < 14) {
+    pool = const <String>['在吃饭，顺便刷帖', '趴着消食，什么都懒得动', '在琢磨中午吃点好的'];
+  } else if (now.hour < 18) {
+    pool = const <String>['在整理今天看到的东西', '刚逛完一圈，脑子还在转', '在发呆，顺便等你'];
+  } else if (now.hour < 22) {
+    pool = const <String>['窝着听歌', '在收拾屋子', '边吃零食边刷帖'];
+  } else {
+    pool = const <String>['准备睡了，还舍不得关手机', '在关灯前再看一会儿', '把灯调暗了，安静一会儿'];
+  }
+  return pool[slot % pool.length];
 }
 
 /// One person she keeps running into in the feeds.

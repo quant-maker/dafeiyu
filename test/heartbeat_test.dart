@@ -6,17 +6,17 @@ import 'package:feiyu/companion/heartbeat.dart';
 
 void main() {
   group('nextBeatDelay', () {
-    test('白天 4..12 分钟', () {
+    test('白天 3..8 分钟', () {
       for (var seed = 0; seed < 200; seed++) {
         final d = nextBeatDelay(Random(seed));
-        expect(d.inMinutes, inInclusiveRange(4, 12));
+        expect(d.inMinutes, inInclusiveRange(3, 8));
       }
     });
 
-    test('抓取失败时退到 12..20 分钟', () {
+    test('抓取失败时退到 10..18 分钟', () {
       for (var seed = 0; seed < 200; seed++) {
         final d = nextBeatDelay(Random(seed), afterFailure: true);
-        expect(d.inMinutes, inInclusiveRange(12, 20));
+        expect(d.inMinutes, inInclusiveRange(10, 18));
       }
     });
   });
@@ -24,10 +24,10 @@ void main() {
   group('heartbeatMayShare', () {
     final now = DateTime(2026, 11, 27, 15, 0);
 
-    test('间隔不足 12 分钟不开口', () {
+    test('间隔不足 8 分钟不开口', () {
       expect(
         heartbeatMayShare(
-          lastShareAt: now.subtract(const Duration(minutes: 11)),
+          lastShareAt: now.subtract(const Duration(minutes: 7)),
           now: now,
           sharesToday: 0,
           isNight: false,
@@ -36,7 +36,7 @@ void main() {
       );
       expect(
         heartbeatMayShare(
-          lastShareAt: now.subtract(const Duration(minutes: 13)),
+          lastShareAt: now.subtract(const Duration(minutes: 9)),
           now: now,
           sharesToday: 0,
           isNight: false,
@@ -73,6 +73,28 @@ void main() {
         ),
         isTrue,
       );
+    });
+  });
+
+  group('activityAt', () {
+    test('同一刻永远说同一件事', () {
+      final t = DateTime(2026, 11, 27, 15, 32);
+      expect(activityAt(t), activityAt(t));
+    });
+
+    test('按钟点换场景', () {
+      final morning = activityAt(DateTime(2026, 11, 27, 8, 0));
+      final afternoon = activityAt(DateTime(2026, 11, 27, 16, 0));
+      final night = activityAt(DateTime(2026, 11, 27, 23, 30));
+      expect(morning, isNot(afternoon));
+      expect(afternoon, isNot(night));
+      expect(night, isNotEmpty);
+    });
+
+    test('同一刻钟里不会来回横跳', () {
+      final a = activityAt(DateTime(2026, 11, 27, 9, 1));
+      final b = activityAt(DateTime(2026, 11, 27, 9, 40));
+      expect(a, b);
     });
   });
 
