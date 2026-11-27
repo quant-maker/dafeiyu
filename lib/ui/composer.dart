@@ -19,6 +19,7 @@ class Composer extends StatelessWidget {
     required this.onSend,
     required this.onStop,
     required this.onSubmitted,
+    this.focusNode,
     this.hint = '和大肥鱼说点什么…',
     this.inCall = false,
     this.onCall,
@@ -26,6 +27,10 @@ class Composer extends StatelessWidget {
   });
 
   final TextEditingController controller;
+
+  /// Owned by the page so focus survives rebuilds (and can be handed back
+  /// after a send — submitting a `send`-action TextField drops focus).
+  final FocusNode? focusNode;
   final bool busy;
   final bool listening;
   final VoidCallback onImage;
@@ -70,10 +75,23 @@ class Composer extends StatelessWidget {
                   Expanded(
                     child: TextField(
                       controller: controller,
+                      focusNode: focusNode,
                       minLines: 1,
                       maxLines: 5,
                       textInputAction: TextInputAction.send,
-                      onSubmitted: onSubmitted,
+                      onSubmitted: (String value) {
+                        final bool keepFocus = focusNode?.hasFocus ?? false;
+                        onSubmitted?.call(value);
+                        // 回车发送后 Flutter 会把输入框的焦点收走，下一句就得
+                        // 先点一下。发送前有焦点，就在这里还回去。
+                        if (keepFocus && focusNode != null) {
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (focusNode!.context != null) {
+                              focusNode!.requestFocus();
+                            }
+                          });
+                        }
+                      },
                       style: AppType.body.copyWith(
                         color: AppPalette.text1,
                         fontSize: 14.5,

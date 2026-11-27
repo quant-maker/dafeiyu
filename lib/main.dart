@@ -639,6 +639,7 @@ class ChatPage extends StatefulWidget {
 
 class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final _input = TextEditingController();
+  final FocusNode _composerFocus = FocusNode();
   final _scroll = ScrollController();
   List<Message> _messages = [];
   final AudioRecorder _recorder = AudioRecorder();
@@ -846,6 +847,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _memoryTimer?.cancel();
     _input.removeListener(_noteInteraction);
     _input.dispose();
+    _composerFocus.dispose();
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
     super.dispose();
@@ -1750,6 +1752,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       setState(() => _error = '先在右上角设置里填 Base URL、API Key 和模型名');
       return;
     }
+    // 发送按钮抢走焦点的话，回车/下一步还能接着打字。
+    final bool keepFocus = _composerFocus.hasFocus;
 
     final image = _pendingImage;
     if (image != null) {
@@ -1782,6 +1786,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     });
     _scrollToEnd();
     _revealStart = DateTime.now();
+    if (keepFocus) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _composerFocus.context != null) _composerFocus.requestFocus();
+      });
+    }
     final reply = await _runAgent();
     if (!mounted) return;
     if (_inCall && _callPhase == CallPhase.thinking) {
@@ -3564,6 +3573,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       },
       child: Composer(
         controller: _input,
+        focusNode: _composerFocus,
         busy: _busy,
         listening: _listening,
         onImage: _imageSheet,
