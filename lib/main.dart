@@ -729,13 +729,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   DateTime? _day;
   DateTime? _pendingThreadDay;
   int _proactiveToday = 0;
-  int _opportunitiesToday = 0;
-  int _ignoredStreak = 0;
 
   /// How many messages went out on a *failed* veto today. Separate from
-  /// [_proactiveToday] because "speak when the gate is unsure" needs its own,
-  /// much tighter ceiling.
-  int _unsureToday = 0;
 
   /// Persisted mirror of the counters above, so a relaunch does not hand her a
   /// fresh daily allowance.
@@ -765,17 +760,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       _budget = b;
       // Only adopt the stored counters when nothing has happened yet in this
       // session; otherwise in-memory truth wins.
-      if (_proactiveToday == 0 && _opportunitiesToday == 0 && _ignoredStreak == 0) {
+      if (_proactiveToday == 0) {
         _day = b.day;
         _proactiveToday = b.sent;
-        _opportunitiesToday = b.opportunities;
-        _ignoredStreak = b.ignoredStreak;
-        _unsureToday = b.unsure;
         _lastProactiveAt ??= b.lastAt;
         debugPrint(
           '[feiyu] budget restored sent=${b.sent} '
-          'opp=${b.opportunities} ignored=${b.ignoredStreak} '
-          'unsure=${b.unsure}',
         );
       }
     }).catchError((Object e) {
@@ -1744,27 +1734,32 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           '可以顺口提，但别编造和他们的对话。');
     }
     final int night = HeartbeatState.isNight(now) ? 1 : 0;
-    buf.write('分享的规矩（很松）：两条主动消息至少隔 ${heartbeatMinGap.inMinutes} 分钟，'
-        '白天最多 $heartbeatDailyCap 次、夜里 $heartbeatNightCap 次。'
-        '今天已经分享 ${_heart.sharesToday} 次'
-        '${night == 1 ? '（夜里 ${_heart.sharesTonight} 次）' : ''}。'
-        '想分享就分享，不用等对方先开口；没什么想说的就不说，这也正常。');
+    final int unanswered = _unansweredRuns();
+    buf.write('想说话就说，不用等对方先开口；没有次数、没有间隔——什么时候说、说多少，'
+        '你自己掂量。掂量的依据是感觉，不是规则：他多久没应你、他刚才的语气、'
+        '你心里到底有没有东西想说。');
+    buf.write('你现在的感觉：'
+        '${moodLine(unanswered: unanswered, night: night == 1, lastReplyAt: _lastInteraction, now: now)}。');
+    if (unanswered > 0 && unanswered < 3) {
+      buf.write('他没接的时候你不会追问「在吗」「你怎么不理我」，'
+          '要么自己找点事做，要么换一件真的想说的事。');
+    }
+    if (night == 1) buf.write('现在是深夜，你会比白天轻一点、慢一点。');
     if (_lastInteraction != null &&
-        now.difference(_lastInteraction!) < const Duration(minutes: 2) &&
-        _heart.lastShareAt != null) {
-      buf.write('对方刚说完话，这会儿接他的话就行，别硬转成你的分享。');
+        now.difference(_lastInteraction!) < const Duration(minutes: 2)) {
+      buf.write('他刚说完话，先接他的话，别急着转成自己的分享。');
     }
     final DateTime? lastShareAt = _heart.lastShareAt;
     if (lastShareAt != null) {
-      buf.write('上次主动说话是${shortStamp(lastShareAt)}'
+      buf.write('你上次主动说话是${shortStamp(lastShareAt)}'
           '（${humanGap(now.difference(lastShareAt))}）。');
     }
     final String? status = _lastInitiativeStatus;
     if (status != null && status.trim().isNotEmpty) {
       buf.write('最近一次主动的结果：$status。');
     }
-    buf.write('对方问「你怎么不主动找我」时，就用这些事实回答（心跳、逛到了什么、间隔、次数），'
-        '别反问他指的是哪种主动；也不要把没说出口的念头说成已经找过他了。'
+    buf.write('对方问「你怎么不主动找我」时，就按这些回答（心跳、你逛到了什么、'
+        '你当时的感受），别反问他指的是哪种主动；也不要把没说出口的念头说成已经找过他了。'
         '对方想立刻看效果，让他去 设置 → 记忆与会话 → 主动开口 点「现在试一次」。');
     return buf.toString();
   }
@@ -2414,26 +2409,39 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   /// She has a say in when to talk: if she just read something and it has been
   /// quiet for a while, she is allowed to bring it up on her own.
+  /// 心跳之后要不要开口，她自己判断。
+  ///
+  /// 这里没有任何配额、间隔、时段限制：判断全交给模型，依据是「她现在的感受」
+  /// ——他多久没回、她自己说了几句还没人接、眼下有没有真的想说的。留给本机
+  /// 的只有两条工程护栏：同一时刻不并发两次发言，以及刚说完话的两分钟内不再
+  /// 问一次（否则会对着同一句话重复自问）。
   Future<void> _maybeHeartbeatShare(DateTime now) async {
     final s = _settings;
     if (s == null || !s.proactiveEnabled || !s.proactiveShareEnabled) return;
     if (_preview || !mounted || _busy || _messages.isEmpty) return;
-    if (_inbox.unsharedCount == 0) return;
-    final night = HeartbeatState.isNight(now);
-    if (!heartbeatMayShare(
-      lastShareAt: _heart.lastShareAt,
-      now: now,
-      sharesToday: night ? _heart.sharesTonight : _heart.sharesToday,
-      isNight: night,
-    )) {
+    final last = _lastProactiveAt;
+    if (last != null && now.difference(last) < const Duration(minutes: 2)) return;
+    // 「要不要想一下」的节奏：有新东西就想想；没有新东西，也要在安静一阵之后
+    // 允许她只是因为想他而说句话。
+    final quietFor = _lastInteraction == null
+        ? const Duration(days: 1)
+        : now.difference(_lastInteraction!);
+    if (_inbox.unsharedCount == 0 && quietFor < const Duration(minutes: 25)) {
       return;
     }
-    // Not every beat becomes a message: she also just reads and moves on. At
-    // night she is even less likely to interrupt.
-    if (_rng.nextDouble() > (night ? .3 : .65)) return;
     final status = await _runInitiative(InitiativeTrigger.heartbeat);
     if (!mounted) return;
     setState(() => _lastInitiativeStatus = status);
+  }
+
+  /// 她自己数：上次他开口之后，我已经连着说了几句没人接。
+  int _unansweredRuns() {
+    var count = 0;
+    for (final m in _messages.reversed) {
+      if (m.role != 'assistant') break;
+      if (m.content.trim().isNotEmpty) count++;
+    }
+    return count;
   }
 
   void _scheduleBeat(Duration delay) {
@@ -2483,7 +2491,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final now = DateTime.now();
     _rollDay(now);
     _lastInteraction = now;
-    _ignoredStreak = 0;
     _persistBudget();
     _ignoredTimer?.cancel();
     _ignoredTimer = null;
@@ -2496,10 +2503,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final day = DateTime(now.year, now.month, now.day);
     if (_day != null && _day == day) return;
     _day = day;
-    _opportunitiesToday = 0;
     _proactiveToday = 0;
-    _ignoredStreak = 0;
-    _unsureToday = 0;
     _dayAnchorDone = false;
     _longSilenceDone = false;
     _afterthoughtUsedForTurn = false;
@@ -2517,9 +2521,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     budget
       ..day = _day ?? budget.day
       ..sent = _proactiveToday
-      ..opportunities = _opportunitiesToday
-      ..ignoredStreak = _ignoredStreak
-      ..unsure = _unsureToday
       ..lastAt = _lastProactiveAt;
     unawaited(budget.save());
   }
@@ -2619,44 +2620,30 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     buffer
       ..writeln('\n你现在：${activityAt(DateTime.now())}。')
       ..writeln('可以顺口说一句自己在干嘛，但别每次都说。');
-    buffer.writeln(
-      '\n这是你自己想说话，不是在回答他。写成一条微信那样的话：'
-      '可以是刚看到的东西、一句感想、一个疑问，或者只是突然想到他。'
-      '想带链接就带 fetch_url 真取到的那条，不想带就别带。'
-      '1~2 句，别说「我刚刚逛了一下」这种汇报腔。'
-      '确实没有想说的就只回 SILENCE——不用每次都说话。',
+    final String feeling = moodLine(
+      unanswered: _unansweredRuns(),
+      night: HeartbeatState.isNight(DateTime.now()),
+      lastReplyAt: _lastInteraction,
+      now: DateTime.now(),
     );
+    buffer
+      ..writeln('\n你现在的感觉：$feeling。')
+      ..writeln('先别急着写，先问自己一句：这会儿说，合适吗？')
+      ..writeln('他正接你的话、你手上又有想说的 → 说。')
+      ..writeln('已经连说几句没人接、或者你自己也提不起兴致、或者困了 → 那就先不说，只回 SILENCE。')
+      ..writeln(
+        '\n要是决定说：这是你自己想说话，不是在回答他。写成一条微信那样的话，'
+        '可以是刚看到的东西、一句感想、一个疑问，或者只是突然想到他。'
+        '想带链接就带 fetch_url 真取到的那条，不想带就别带。'
+        '1~2 句，别说「我刚刚逛了一下」这种汇报腔。'
+        '不想说就只回 SILENCE——不用每次都说话，也不用为了凑数找话说。',
+      );
     return buffer.toString();
   }
 
   static const String _chatNudge =
       '主人已经一段时间没说话了。用一句很短的话主动搭个话：可以接着刚才的话题，'
       '也可以随口分享一点自己的念头。不要问「你在吗」，不要客套，不要超过 30 字。';
-
-  static const String _vetoNudge = '你要决定现在要不要主动找他。\n'
-      '大多数时候可以说：你记得他的事、你们刚聊过、时间合适、或者你有具体想说的，都属于可以。\n'
-      '只有下面情况才沉默：深夜他真的该睡了、他刚被拒绝/明显情绪不好、你确实没有任何新东西。\n'
-      '能说话就说。宁可短，也别不说。\n'
-      '只输出以下之一，不要解释：SILENT / SPEAK:CHAT / SPEAK:SHARE';
-
-  /// The veto prompt, with any buffered headlines folded in.
-  String _vetoPrompt() {
-    final buffer = StringBuffer(_vetoNudge)..writeln();
-    if (_inbox.unsharedCount > 0) {
-      buffer.writeln(
-        '你手上有 ${_inbox.unsharedCount} 条还没分享的发现（标题 + 来源）。'
-        '有值得讲的就挑一条，用 SPEAK:SHARE；只想闲聊用 SPEAK:CHAT；确实没有就 SILENT。',
-      );
-      for (final item in _inbox.items.take(5)) {
-        buffer.writeln('- ${item.title}（${item.source}）');
-      }
-    } else {
-      buffer.writeln(
-        '你手上现在没有新的发现，想主动找他只能闲聊，用 SPEAK:CHAT；不想说话用 SILENT。',
-      );
-    }
-    return buffer.toString();
-  }
 
   static final RegExp _urlPattern = RegExp(
     r'''https?://[^\s<>'")\]}，。；！？]+''',
@@ -2668,19 +2655,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       .map((m) => m.group(0)!.replaceAll(RegExp(r'[.,;!?]+$'), ''))
       .where((u) => u.isNotEmpty)
       .toList();
-
-  void _startIgnoredCountdown() {
-    final firedAt = DateTime.now();
-    _ignoredTimer?.cancel();
-    _ignoredTimer = Timer(const Duration(minutes: 10), () {
-      if (!mounted) return;
-      final last = _lastInteraction;
-      if (last != null && last.isAfter(firedAt)) return;
-      _ignoredStreak++;
-      _persistBudget();
-      debugPrint('[feiyu] no reply in 10m, ignored streak → $_ignoredStreak');
-    });
-  }
 
   /// An event asked to speak; policy and the model veto still stand in the way.
   ///
@@ -2696,74 +2670,45 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (!mounted || _busy || _messages.isEmpty) return;
     final now = DateTime.now();
     _rollDay(now);
-    if (inQuietHours(now)) return;
-    if (_proactiveToday >= 3 || _ignoredStreak >= 3) return;
-    if (_opportunitiesToday >= 6) return;
-    // The safety net that holds even when the veto says "go ahead": two
-    // proactive messages can never be closer than [minProactiveGap], so a
-    // stack of timers firing together still produces at most one message.
-    if (!gapAllowsSpeak(_lastProactiveAt, now)) return;
+    // 只剩工程护栏：同一时刻不并发、不在两分钟内对同一句话重复自问。
+    final last = _lastProactiveAt;
+    if (last != null && now.difference(last) < const Duration(minutes: 2)) return;
     if (trigger == InitiativeTrigger.dayAnchor) _dayAnchorDone = true;
     if (trigger == InitiativeTrigger.longSilence) _longSilenceDone = true;
 
-    _opportunitiesToday++;
     _persistBudget();
     final status = await _runInitiative(trigger, reason: reason);
     if (mounted) setState(() => _lastInitiativeStatus = status);
   }
 
-  /// Shared veto → speak path. Returns a short human status string (without
-  /// the leading clock for callers that add their own timestamp).
+  /// The one path to a proactive message. No gate, no quota: she picks the
+  /// occasion, and the decision to stay quiet is hers too (the prompt lets her
+  /// answer SILENCE — 见 [_speakUp]).
   Future<String> _runInitiative(
     InitiativeTrigger trigger, {
     String reason = '',
   }) async {
     final stamp = _stamp();
-    // A manual run is an explicit "show me something now", so it never ends in
-    // silence. With buffered headlines it still asks the model once (cheap) so
-    // it can prefer a share; otherwise it just chats. Automatic opportunities
-    // always pass through the (speak-biased) veto gate.
-    InitiativeMode mode;
-    bool unsure = false;
-    if (trigger == InitiativeTrigger.heartbeat) {
-      // 心跳不走否决关卡：她已经自己逛过一圈，决定要说，才走到这里。
-      mode = InitiativeMode.share;
-    } else if (trigger == InitiativeTrigger.manual) {
-      if (_inbox.unsharedCount > 0) {
-        final veto = await _veto(trigger, reason);
-        unsure = veto == null;
-        mode = veto == InitiativeMode.share
-            ? InitiativeMode.share
-            : InitiativeMode.chat;
-      } else {
-        mode = InitiativeMode.chat;
-      }
-    } else {
-      final veto = await _veto(trigger, reason);
-      unsure = veto == null;
-      mode = veto ?? InitiativeMode.chat;
-    }
-    // When the gate could not answer we still prefer speaking, but only a
-    // couple of times a day: a broken provider must not become a chatty one.
-    if (unsure && !unsureAllowsSpeak(_unsureToday)) {
-      return '$stamp · 网关没给出判断，今天兜底次数用完了';
-    }
-    if (mode == InitiativeMode.silent) {
-      return '$stamp · 她决定先不说话（SILENT）';
-    }
     if (!mounted || _busy) {
       return '$stamp · 她决定先不说话（SILENT）';
+    }
+    InitiativeMode mode;
+    if (trigger == InitiativeTrigger.heartbeat) {
+      // 心跳里她已经自己逛过一圈：有新材料就说材料，没有就只是想说句话。
+      mode = InitiativeMode.share;
+    } else if (_inbox.unsharedCount > 0 &&
+        (trigger == InitiativeTrigger.longSilence ||
+            trigger == InitiativeTrigger.manual)) {
+      mode = InitiativeMode.share;
+    } else {
+      // 他回来了、今天第一次见、刚聊完想补一句：先说人话，不急着甩新闻。
+      mode = InitiativeMode.chat;
     }
     final s = _settings;
     if (mode == InitiativeMode.share && (s == null || !s.proactiveShareEnabled)) {
       mode = InitiativeMode.chat;
     }
     final outcome = await _speakUp(trigger, mode);
-    if (unsure &&
-        (outcome == 'sent-chat' || outcome == 'sent-share')) {
-      _unsureToday++;
-      _persistBudget();
-    }
     return _initiativeStatusFrom(stamp, outcome, trigger);
   }
 
@@ -2825,58 +2770,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   String _stamp() {
     final now = DateTime.now();
     return '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
-  }
-
-  /// Asks the model whether this opportunity is worth a message, and how.
-  ///
-  /// Returns `null` when the gate could not answer at all (timeout, network,
-  /// junk reply). Callers treat that as "unknown" and may still speak, inside
-  /// a much tighter budget. A reply that names no mode is a decision to stay
-  /// silent, not a failure.
-  Future<InitiativeMode?> _veto(
-    InitiativeTrigger trigger, [
-    String reason = '',
-  ]) async {
-    final s = _settings;
-    if (s == null) return InitiativeMode.silent;
-    final recent = _messages.where((m) => m.content.trim().isNotEmpty).toList();
-    if (recent.isEmpty) return InitiativeMode.silent;
-    final tail = recent.length > 8 ? recent.sublist(recent.length - 8) : recent;
-    final last = _lastInteraction ?? _lastProactiveAt;
-    final minutes =
-        last == null ? 9999 : DateTime.now().difference(last).inMinutes;
-    final context = tail
-        .map((m) => '${m.role == 'user' ? '主人' : '我'}：${m.content}')
-        .join('\n');
-    final convo = <Map<String, dynamic>>[
-      {'role': 'system', 'content': _systemPrompt(s)},
-      {'role': 'user', 'content': '$context\n距上次说话：$minutes 分钟'},
-      {'role': 'system', 'content': _vetoPrompt()},
-    ];
-    try {
-      final target = Message('assistant', '');
-      final result = await _streamTurn(
-        s,
-        convo,
-        target,
-        maxTokens: 40,
-        allowTools: false,
-        reveal: false,
-      ).timeout(const Duration(seconds: 30));
-      final mode = parseVetoReply(result.text);
-      debugPrint(
-        '[feiyu] initiative mode=${mode.name} trigger=${trigger.name} reason=$reason',
-      );
-      return mode;
-    } catch (e) {
-      // The gate is speak-biased on purpose ("能说话就说"). If we cannot get an
-      // opinion at all (timeout / provider hiccup), fall through to chatting
-      // instead of silently doing nothing. That is safe only because of the
-      // independent ceilings: [_maxUnsurePerDay] for exactly this case,
-      // [_minProactiveGap] between any two messages, and the daily caps.
-      debugPrint('[feiyu] veto ${trigger.name} failed, defaulting to chat: $e');
-      return null;
-    }
   }
 
   Future<String> _speakUp(
@@ -2974,9 +2867,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         unawaited(FootprintStore.save(_footprints));
         debugPrint('[feiyu] share sent url=${urls.isEmpty ? '（无链接）' : urls.first}');
       }
-      _startIgnoredCountdown();
-      return isShare ? 'sent-share' : 'sent-chat';
-    } catch (e) {
+      return isShare ? 'sent-share' : 'sent-chat';    } catch (e) {
       // Proactive turns are best-effort.
       return 'failed:$e';
     } finally {
@@ -5141,8 +5032,8 @@ class _SettingsPageState extends State<SettingsPage> {
               _SettingsSwitch(
                 title: '主动开口',
                 subtitle: _proactiveEnabled
-                    ? '你不说话时，它会按自己的节奏主动搭话'
-                    : '打开后，你不说话时它会主动找你',
+                    ? '她按自己的节奏来：想你了、有话想说、逛到好玩的，就来找你'
+                    : '关掉后她只自己玩、自己记，不出声',
                 value: _proactiveEnabled,
                 onChanged: (v) async {
                   setState(() => _proactiveEnabled = v);
@@ -5162,8 +5053,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 const SizedBox(height: 14),
                 SettingsRow(
-                  label: '空闲多久主动找你',
-                  description: '安静这么久后，她会考虑说句话',
+                  label: '安静多久算你不在',
+                  description: '她在心里算的「他多久没出声」',
                   child: DropdownButton<int>(
                     value: _proactiveIdleMinutes,
                     isExpanded: true,

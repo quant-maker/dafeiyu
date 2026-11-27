@@ -7,7 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 ///
 /// A heartbeat is cheap on purpose: it only touches local state, and the
 /// expensive parts (pulling feeds, maybe talking to a model) happen on a much
-/// sparser cadence chosen by the caller. 4..12 minutes is frequent enough to
+/// sparser cadence chosen by the caller. 3..8 minutes is frequent enough to
 /// feel like someone is living between messages, and slow enough to survive a
 /// phone that is left open for hours.
 Duration nextBeatDelay(Random rng, {bool afterFailure = false}) {
@@ -15,33 +15,31 @@ Duration nextBeatDelay(Random rng, {bool afterFailure = false}) {
   return Duration(minutes: 3 + rng.nextInt(6));
 }
 
-/// Minimum spacing between two heartbeat-driven messages.
-const Duration heartbeatMinGap = Duration(minutes: 8);
-
-/// A soft daily ceiling for heartbeat messages. Higher than the old
-/// opportunity budget because the whole point is that she no longer has to
-/// wait for a slot — but not unlimited, or it becomes noise.
-const int heartbeatDailyCap = 30;
-
-/// Late night is capped separately instead of silenced.
-const int heartbeatNightCap = 5;
-
-/// Whether a heartbeat message may go out right now.
+/// Her read on the situation, in plain words.
 ///
-/// Deliberately simpler than the old opportunity gate: a minimum gap and a
-/// daily ceiling, and nothing about "the user has been idle for N minutes" —
-/// she may speak first whenever she has something.
-bool heartbeatMayShare({
-  required DateTime? lastShareAt,
+/// Nothing here is a rule she has to obey — it is how the moment feels, which
+/// is what actually decides whether she speaks. Kept as a pure function so the
+/// wording cannot drift away from the facts it describes.
+String moodLine({
+  required int unanswered,
+  required bool night,
+  required DateTime? lastReplyAt,
   required DateTime now,
-  required int sharesToday,
-  required bool isNight,
 }) {
-  if (lastShareAt != null && now.difference(lastShareAt) < heartbeatMinGap) {
-    return false;
+  if (unanswered >= 3) {
+    return '心里有点讪讪的——你连说了 $unanswered 句他还没接，你会自己收着点';
   }
-  final cap = isNight ? heartbeatNightCap : heartbeatDailyCap;
-  return sharesToday < cap;
+  if (unanswered == 2) return '两条都没人接，你有点想缩回去';
+  if (unanswered == 1) return '你刚说了一句，还在等他回';
+  final Duration? gap =
+      lastReplyAt == null ? null : now.difference(lastReplyAt);
+  if (gap == null) return '你还不太知道他今天什么节奏';
+  if (gap.inSeconds < 120) return '聊得正热，你话会多一点';
+  if (gap.inMinutes < 45) return '他刚走开一会儿，你自己待着';
+  if (gap.inHours < 3) return '他有一阵没出声了，你偶尔会往他那边看一眼';
+  if (gap.inHours < 12) return '安静了挺久，你有点想他，但也过得挺好';
+  if (night) return '很晚了，你有点困，不太想吵他';
+  return '他好像很久没来了，你会想他，但不会一直追问';
 }
 
 /// What she is up to right now, in her own words.

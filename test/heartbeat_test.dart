@@ -21,57 +21,69 @@ void main() {
     });
   });
 
-  group('heartbeatMayShare', () {
+  group('moodLine', () {
     final now = DateTime(2026, 11, 27, 15, 0);
 
-    test('间隔不足 8 分钟不开口', () {
-      expect(
-        heartbeatMayShare(
-          lastShareAt: now.subtract(const Duration(minutes: 7)),
-          now: now,
-          sharesToday: 0,
-          isNight: false,
-        ),
-        isFalse,
+    test('没人接的时候会自己收着', () {
+      final line = moodLine(
+        unanswered: 4,
+        night: false,
+        lastReplyAt: now.subtract(const Duration(hours: 2)),
+        now: now,
       );
+      expect(line, contains('讪讪'));
+      expect(line, contains('收着'));
+    });
+
+    test('刚说完一句是在等，不是被无视', () {
       expect(
-        heartbeatMayShare(
-          lastShareAt: now.subtract(const Duration(minutes: 9)),
+        moodLine(
+          unanswered: 1,
+          night: false,
+          lastReplyAt: now.subtract(const Duration(minutes: 3)),
           now: now,
-          sharesToday: 0,
-          isNight: false,
         ),
-        isTrue,
+        contains('等他回'),
       );
     });
 
-    test('白天与夜里各有上限', () {
+    test('聊得顺的时候话更多', () {
       expect(
-        heartbeatMayShare(
-          lastShareAt: null,
+        moodLine(
+          unanswered: 0,
+          night: false,
+          lastReplyAt: now.subtract(const Duration(seconds: 20)),
           now: now,
-          sharesToday: heartbeatDailyCap,
-          isNight: false,
         ),
-        isFalse,
+        contains('聊得正热'),
+      );
+    });
+
+    test('安静久了会想他，夜里会困', () {
+      expect(
+        moodLine(
+          unanswered: 0,
+          night: false,
+          lastReplyAt: now.subtract(const Duration(days: 2)),
+          now: now,
+        ),
+        contains('很久没来'),
       );
       expect(
-        heartbeatMayShare(
-          lastShareAt: null,
+        moodLine(
+          unanswered: 0,
+          night: true,
+          lastReplyAt: now.subtract(const Duration(hours: 15)),
           now: now,
-          sharesToday: heartbeatNightCap,
-          isNight: true,
         ),
-        isFalse,
+        contains('困'),
       );
+    });
+
+    test('没有历史也不装熟', () {
       expect(
-        heartbeatMayShare(
-          lastShareAt: null,
-          now: now,
-          sharesToday: heartbeatNightCap - 1,
-          isNight: true,
-        ),
-        isTrue,
+        moodLine(unanswered: 0, night: false, lastReplyAt: null, now: now),
+        contains('不太知道'),
       );
     });
   });
