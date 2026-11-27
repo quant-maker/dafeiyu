@@ -29,6 +29,10 @@ enum InitiativeTrigger {
   /// A single-shot check armed after a real interaction, so the web build
   /// still reaches out when the tab stays open and no lifecycle event fires.
   presence,
+
+  /// Her own heartbeat: she woke up, went for a walk through the feeds, and
+  /// decided this was worth saying out of the blue.
+  heartbeat,
 }
 
 /// How long to wait before the next single-shot presence check, in minutes.

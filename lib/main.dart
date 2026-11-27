@@ -16,6 +16,7 @@ import 'package:speech_to_text/speech_to_text.dart';
 
 import 'companion/feed_fetch.dart';
 import 'companion/feed_inbox.dart';
+import 'companion/heartbeat.dart';
 import 'companion/initiative.dart';
 import 'companion/initiative_budget.dart';
 import 'comfy/comfy.dart';
@@ -180,7 +181,7 @@ class Settings {
     this.userAvatar,
     this.memoryEnabled = true,
     this.privacyLocalOnly = true,
-    this.proactiveEnabled = false,
+    this.proactiveEnabled = true,
     this.proactiveShareEnabled = true,
     this.sceneEnabled = true,
     this.sceneDim = .42,
@@ -243,7 +244,7 @@ class Settings {
       userAvatar: rawUserAvatar.isEmpty ? null : rawUserAvatar,
       memoryEnabled: j['memoryEnabled'] as bool? ?? true,
       privacyLocalOnly: j['privacyLocalOnly'] as bool? ?? true,
-      proactiveEnabled: j['proactiveEnabled'] as bool? ?? false,
+      proactiveEnabled: j['proactiveEnabled'] as bool? ?? true,
       proactiveShareEnabled: j['proactiveShareEnabled'] as bool? ?? true,
       sceneEnabled: j['sceneEnabled'] as bool? ?? true,
       sceneDim: (j['sceneDim'] as num?)?.toDouble() ?? .42,
@@ -682,7 +683,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final Random _rng = Random();
   SharedUrlStore _sharedUrls = SharedUrlStore.empty();
   FeedInbox _inbox = FeedInbox.empty();
-  Timer? _heartbeatTimer;
+  Timer? _beatTimer;
+
+  /// The persisted heartbeat: last beat, today's activity, familiar names.
+  HeartbeatState _heart = HeartbeatState();
+
+  /// How often a beat actually goes out to look at feeds.
+  static const Duration _browseEvery = Duration(minutes: 40);
+
+  /// How often browsing may leave a footprint in 足迹. Sharing adds its own.
+  static const Duration _footprintEvery = Duration(minutes: 90);
   Timer? _memoryTimer;
   bool _heartbeatFailed = false;
   Timer? _ignoredTimer;
@@ -843,7 +853,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _afterthoughtTimer?.cancel();
     _longSilenceTimer?.cancel();
     _presenceTimer?.cancel();
-    _heartbeatTimer?.cancel();
+    _beatTimer?.cancel();
     _memoryTimer?.cancel();
     _input.removeListener(_noteInteraction);
     _input.dispose();
@@ -993,6 +1003,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           onTryInitiative: _tryInitiativeNow,
           initialInitiativeStatus: _lastInitiativeStatus,
           initialNextCheck: _nextCheckLabel,
+          initialHeartbeat: _heartbeatLine(),
           inboxCount: _inbox.unsharedCount,
           focusComfy: focusComfy,
         ),
@@ -1677,42 +1688,53 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// 「你说的是哪种主动」。对方问起时直接讲事实。
   String _proactiveContext(Settings s) {
     if (!s.proactiveEnabled) {
-      return '「主动开口」现在是关着的（设置 → 记忆与会话 → 主动开口），'
-          '所以你不会主动找对方。对方问起为什么不找他，就直说这个开关关着、打开就会。';
+      return '「主动开口」现在是关着的（设置 → 记忆与会话 → 主动开口）：'
+          '你的心跳还在跳，你还会自己出去逛、往「足迹」里记东西，但不会主动找他说话。'
+          '对方问起为什么不找他，就直说这个开关关着、打开你就会开口。';
     }
     final DateTime now = DateTime.now();
-    final int idle = _idleMinutes();
     final StringBuffer buf = StringBuffer(
-      '你有主动找对方的能力：对方超过 $idle 分钟没说话，你才可能主动开口；'
-      '一天最多 3 次，两次之间至少隔 45 分钟；凌晨 7:30 前不打扰；'
-      '被连着忽略几次你会自己收敛。每次开口前还有一道「该不该说」的判断，'
-      '很多时候会判成不说话——那是有意的克制，不是不想他。'
-      '还有一个边界：你只在 App 开着的时候能主动开口，没有系统推送；'
-      'App 被关掉的这段时间你说不了话，别答应「我今晚一定找你」这种做不到的事。',
+      '你是按「心跳」活着的：每隔几分钟你会醒一下，自己出去逛 HN、V2EX、华尔街见闻，'
+      '看看有什么新鲜的，碰到眼熟的名字会留意，觉得有意思就记进「足迹」。'
+      '心跳让你的时间连续地往前走——不是只有对方说话你才存在。'
+      '心跳是本地计时器，只在 App 开着时跳；App 被关掉的那段是睡着的，'
+      '所以别答应「我今晚一定找你」这种做不到的事。',
     );
-    buf.write('今天你已经主动开口 $_proactiveToday 次（每天最多 3 次）。');
-    final DateTime? last = _lastProactiveAt;
-    if (last != null) {
-      buf.write('上次主动开口是${relativeDay(last, now)}${dayPart(last)}'
-          '（${shortStamp(last)}，${humanGap(now.difference(last))}）。');
+    final DateTime? beat = _heart.lastBeatAt;
+    if (beat != null) {
+      buf.write('最近一次心跳：${shortStamp(beat)}（${humanGap(now.difference(beat))}）。');
     }
-    if (_ignoredStreak >= 3) {
-      buf.write('最近连着几次开口对方没回，所以现在故意收敛，等他先说话。');
-    } else if (_opportunitiesToday >= 6) {
-      buf.write('今天「考虑主动」的次数已经用完了，得等明天。');
-    } else if (inQuietHours(now)) {
-      buf.write('现在是静默时段（7:30 前），按规矩不打扰。');
-    } else if (!gapAllowsSpeak(last, now)) {
-      buf.write('离上一次主动还不到 45 分钟，规矩是最短间隔。');
-    } else if (_lastInteraction != null &&
-        now.difference(_lastInteraction!) < Duration(minutes: idle)) {
-      buf.write('对方刚跟你说过话，还没到你该主动的 $idle 分钟。');
+    buf.write('今天已经心跳 ${_heart.beatsToday} 次。');
+    if (_heart.lastNote.trim().isNotEmpty) {
+      buf.write('刚才${_heart.lastNote}。');
+    }
+    final familiar = _heart.familiar.take(3).toList();
+    if (familiar.isNotEmpty) {
+      buf.write('你在这几个地方常看到同一批人：'
+          '${familiar.map((v) => '${v.source} 的 ${v.name}').join('、')}，'
+          '可以顺口提，但别编造和他们的对话。');
+    }
+    final int night = HeartbeatState.isNight(now) ? 1 : 0;
+    buf.write('分享的规矩（很松）：两条主动消息至少隔 ${heartbeatMinGap.inMinutes} 分钟，'
+        '白天最多 $heartbeatDailyCap 次、夜里 $heartbeatNightCap 次。'
+        '今天已经分享 ${_heart.sharesToday} 次'
+        '${night == 1 ? '（夜里 ${_heart.sharesTonight} 次）' : ''}。'
+        '想分享就分享，不用等对方先开口；没什么想说的就不说，这也正常。');
+    if (_lastInteraction != null &&
+        now.difference(_lastInteraction!) < const Duration(minutes: 2) &&
+        _heart.lastShareAt != null) {
+      buf.write('对方刚说完话，这会儿接他的话就行，别硬转成你的分享。');
+    }
+    final DateTime? lastShareAt = _heart.lastShareAt;
+    if (lastShareAt != null) {
+      buf.write('上次主动说话是${shortStamp(lastShareAt)}'
+          '（${humanGap(now.difference(lastShareAt))}）。');
     }
     final String? status = _lastInitiativeStatus;
     if (status != null && status.trim().isNotEmpty) {
       buf.write('最近一次主动的结果：$status。');
     }
-    buf.write('对方问「你怎么不主动找我」时，就用这些事实回答（开关、间隔、次数、静默），'
+    buf.write('对方问「你怎么不主动找我」时，就用这些事实回答（心跳、逛到了什么、间隔、次数），'
         '别反问他指的是哪种主动；也不要把没说出口的念头说成已经找过他了。'
         '对方想立刻看效果，让他去 设置 → 记忆与会话 → 主动开口 点「现在试一次」。');
     return buf.toString();
@@ -2271,44 +2293,134 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (_preview) return;
     try {
       _inbox = await FeedInbox.load();
+      _heart = await HeartbeatState.load();
       if (mounted) setState(() {});
     } catch (e) {
       debugPrint('[feiyu] inbox load FAILED: $e');
     }
     if (!mounted) return;
-    unawaited(_runHeartbeat());
+    unawaited(_beat());
   }
 
-  Future<void> _runHeartbeat() async {
-    if (_preview) return;
+  /// One heartbeat: she "wakes up", notes the time, maybe goes for a walk.
+  ///
+  /// The beat itself only touches local state, so it can be frequent. The two
+  /// expensive parts are rate-limited inside: pulling feeds happens at most
+  /// every [_browseEvery], and actually saying something is left to
+  /// [_maybeHeartbeatShare].
+  Future<void> _beat() async {
+    if (_preview || !mounted) return;
+    final now = DateTime.now();
+    _heart.beat(now);
+    await _heart.save();
+    if (mounted) setState(() {});
+
+    final lastBrowse = _heart.lastBrowseAt;
+    if (lastBrowse == null || now.difference(lastBrowse) >= _browseEvery) {
+      await _browse(now);
+    }
+    if (!mounted || _preview) return;
+    await _maybeHeartbeatShare(now);
+    if (!mounted || _preview) return;
+    _scheduleBeat(nextBeatDelay(_rng, afterFailure: _heartbeatFailed));
+  }
+
+  /// The browsing half of a beat: pull feeds, notice familiar names, and keep
+  /// a footprint of what she read (at most one every [_footprintEvery]).
+  Future<void> _browse(DateTime now) async {
     var added = 0;
     try {
       final fresh = await fetchFeeds(httpGet: defaultJsonFetcher);
       added = await _inbox.addAll(fresh);
       await _inbox.prune();
       _heartbeatFailed = fresh.isEmpty;
+      for (final item in fresh) {
+        if (item.author.isNotEmpty) {
+          _heart.seeVoice(item.source, item.author, now);
+        }
+      }
+      _heart.lastBrowseAt = now;
     } catch (e) {
       _heartbeatFailed = true;
       debugPrint('[feiyu] heartbeat fetch failed: $e');
     }
     debugPrint('[feiyu] inbox +$added total=${_inbox.items.length}');
+
+    final item = _inbox.items.isEmpty ? null : _inbox.items.first;
+    if (item != null && added > 0) {
+      _heart.lastNote = '在 ${item.source} 看到「${_shorten(item.title, 40)}」';
+    }
+    final lastFp = _heart.lastFootprintAt;
+    if (item != null &&
+        added > 0 &&
+        (lastFp == null || now.difference(lastFp) >= _footprintEvery)) {
+      final fp = Footprint(
+        id: now.microsecondsSinceEpoch.toString(),
+        at: now,
+        title: item.source.isEmpty ? '网页' : item.source,
+        body: _shorten(item.title, 120),
+        mood: '🌐',
+      );
+      _heart.lastFootprintAt = now;
+      if (mounted) setState(() => _footprints = [fp, ..._footprints]);
+      unawaited(FootprintStore.save(_footprints));
+    }
+    await _heart.save();
     if (mounted) setState(() {});
-    if (!mounted || _preview) return;
-    // Success: 90..180 minutes. Failure: back off to 180 so we never hammer.
-    final delay = _heartbeatFailed
-        ? const Duration(minutes: 180)
-        : Duration(minutes: 90 + _rng.nextInt(91));
-    _scheduleHeartbeat(delay);
   }
 
-  void _scheduleHeartbeat(Duration delay) {
+  /// She has a say in when to talk: if she just read something and it has been
+  /// quiet for a while, she is allowed to bring it up on her own.
+  Future<void> _maybeHeartbeatShare(DateTime now) async {
+    final s = _settings;
+    if (s == null || !s.proactiveEnabled || !s.proactiveShareEnabled) return;
+    if (_preview || !mounted || _busy || _messages.isEmpty) return;
+    if (_inbox.unsharedCount == 0) return;
+    final night = HeartbeatState.isNight(now);
+    if (!heartbeatMayShare(
+      lastShareAt: _heart.lastShareAt,
+      now: now,
+      sharesToday: night ? _heart.sharesTonight : _heart.sharesToday,
+      isNight: night,
+    )) {
+      return;
+    }
+    // Not every beat becomes a message: she also just reads and moves on. At
+    // night she is even less likely to interrupt.
+    if (_rng.nextDouble() > (night ? .25 : .5)) return;
+    final status = await _runInitiative(InitiativeTrigger.heartbeat);
+    if (!mounted) return;
+    setState(() => _lastInitiativeStatus = status);
+  }
+
+  void _scheduleBeat(Duration delay) {
     if (_preview) return;
-    _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer(delay, () {
-      _heartbeatTimer = null;
-      unawaited(_runHeartbeat());
+    _beatTimer?.cancel();
+    _beatTimer = Timer(delay, () {
+      _beatTimer = null;
+      unawaited(_beat());
     });
-    debugPrint('[feiyu] heartbeat next in ${delay.inMinutes}m');
+    debugPrint('[feiyu] next beat in ${delay.inMinutes}m');
+  }
+
+  static String _shorten(String text, int max) {
+    final t = text.trim();
+    return t.length <= max ? t : '${t.substring(0, max)}…';
+  }
+
+  /// 设置里那行心跳状态。
+  String _heartbeatLine() {
+    final beat = _heart.lastBeatAt;
+    if (beat == null) return '心跳：还没有跳过';
+    final now = DateTime.now();
+    final parts = <String>[
+      '心跳：${shortStamp(beat)}（${humanGap(now.difference(beat))}）',
+      '今天 ${_heart.beatsToday} 次',
+    ];
+    if (_heart.lastNote.trim().isNotEmpty) {
+      parts.add(_shorten(_heart.lastNote, 22));
+    }
+    return parts.join(' · ');
   }
 
   void _setNextCheckLabel(DateTime? at) {
@@ -2440,6 +2552,37 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     return buffer.toString();
   }
 
+  /// The nudge behind a heartbeat message: she is not answering anyone, she
+  /// just came back from reading something and felt like mentioning it.
+  String _heartbeatPrompt() {
+    final buffer = StringBuffer(
+      '你刚自己逛了一圈（心跳）。手上的这些是刚看到的东西：\n',
+    );
+    final items = _inbox.items.take(5).toList();
+    if (items.isEmpty) {
+      buffer.writeln('- （这次没看到什么）');
+    } else {
+      for (final item in items) {
+        buffer.writeln('- ${item.title}（${item.source}）：${item.url}');
+      }
+    }
+    final voices = _heart.familiar.take(3).toList();
+    if (voices.isNotEmpty) {
+      buffer.writeln(
+        '\n眼熟的名字：${voices.map((v) => '${v.source} 的 ${v.name}（第 ${v.count} 次见到）').join('、')}。'
+        '顺口提一句「又看到你」那种可以，但别编造和他们的对话。',
+      );
+    }
+    buffer.writeln(
+      '\n这是你自己想说话，不是在回答他。写成一条微信那样的话：'
+      '可以是刚看到的东西、一句感想、一个疑问，或者只是突然想到他。'
+      '想带链接就带 fetch_url 真取到的那条，不想带就别带。'
+      '1~2 句，别说「我刚刚逛了一下」这种汇报腔。'
+      '确实没有想说的就只回 SILENCE——不用每次都说话。',
+    );
+    return buffer.toString();
+  }
+
   static const String _chatNudge =
       '主人已经一段时间没说话了。用一句很短的话主动搭个话：可以接着刚才的话题，'
       '也可以随口分享一点自己的念头。不要问「你在吗」，不要客套，不要超过 30 字。';
@@ -2536,7 +2679,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     // always pass through the (speak-biased) veto gate.
     InitiativeMode mode;
     bool unsure = false;
-    if (trigger == InitiativeTrigger.manual) {
+    if (trigger == InitiativeTrigger.heartbeat) {
+      // 心跳不走否决关卡：她已经自己逛过一圈，决定要说，才走到这里。
+      mode = InitiativeMode.share;
+    } else if (trigger == InitiativeTrigger.manual) {
       if (_inbox.unsharedCount > 0) {
         final veto = await _veto(trigger, reason);
         unsure = veto == null;
@@ -2581,6 +2727,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     InitiativeTrigger trigger = InitiativeTrigger.afterthought,
   ]) {
     if (outcome == 'sent-share') {
+      if (trigger == InitiativeTrigger.heartbeat) return '$stamp · 心跳：她分享了刚才逛到的东西';
       return trigger == InitiativeTrigger.manual
           ? '$stamp · 手动测试已发出'
           : '$stamp · 分享已发出';
@@ -2595,6 +2742,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       var detail = outcome.substring(7).trim();
       if (detail.length > 60) detail = detail.substring(0, 60);
       return '$stamp · 失败：$detail';
+    }
+    if (trigger == InitiativeTrigger.heartbeat) {
+      return '$stamp · 心跳：这次没想说的';
     }
     return '$stamp · 她决定先不说话（SILENT）';
   }
@@ -2701,11 +2851,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (recent.isEmpty) return 'silent';
 
     final isShare = mode == InitiativeMode.share;
+    final isHeartbeat = trigger == InitiativeTrigger.heartbeat;
     try {
       setState(() => _busy = true);
 
       // 旧事：给她一颗很久没碰的星当话头，用不用由她决定。
-      var nudge = isShare ? _sharePrompt() : _chatNudge;
+      var nudge = isShare
+          ? (isHeartbeat ? _heartbeatPrompt() : _sharePrompt())
+          : _chatNudge;
       if (!isShare) {
         final hook = await _store?.hookLine() ?? '';
         if (hook.isNotEmpty) {
@@ -2727,7 +2880,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         return 'silent';
       }
 
-      if (isShare && !hasFreshLink(said, _sharedUrls.urls)) {
+      // 心跳发言可以是想法，不一定要带链接；老路径仍然要求一条新链接。
+      if (isShare && !isHeartbeat && !hasFreshLink(said, _sharedUrls.urls)) {
         // One more fetch with an explicit nudge, then give up quietly.
         said = await _runProactiveTurn(
           s,
@@ -2744,12 +2898,19 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       }
 
       final urls = isShare ? _urlsIn(said) : const <String>[];
+      final now = DateTime.now();
       setState(() {
         _proactiveToday++;
-        _lastProactiveAt = DateTime.now();
+        _lastProactiveAt = now;
         _messages.add(Message('assistant', said));
       });
       _persistBudget();
+      _heart
+        ..rollDay(now)
+        ..lastShareAt = now
+        ..sharesToday += 1;
+      if (HeartbeatState.isNight(now)) _heart.sharesTonight += 1;
+      unawaited(_heart.save());
       unawaited(ChatStore.save(_messages));
       _scrollToEnd();
       if (isShare) {
@@ -2761,11 +2922,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         final fp = footprintFromShare(
           source: source,
           text: said,
-          at: DateTime.now(),
+          at: now,
         );
         setState(() => _footprints = [fp, ..._footprints]);
         unawaited(FootprintStore.save(_footprints));
-        debugPrint('[feiyu] share sent url=${urls.first}');
+        debugPrint('[feiyu] share sent url=${urls.isEmpty ? '（无链接）' : urls.first}');
       }
       _startIgnoredCountdown();
       return isShare ? 'sent-share' : 'sent-chat';
@@ -3600,6 +3761,9 @@ class SettingsPage extends StatefulWidget {
   final Future<String> Function()? onTryInitiative;
   final String? initialInitiativeStatus;
   final String? initialNextCheck;
+
+  /// 心跳现状：上次什么时候跳的、今天跳了几次、下次大约什么时候。
+  final String? initialHeartbeat;
   final int inboxCount;
 
   /// Opened from the drawing page: jump straight to the ComfyUI card instead
@@ -3617,6 +3781,7 @@ class SettingsPage extends StatefulWidget {
     this.onTryInitiative,
     this.initialInitiativeStatus,
     this.initialNextCheck,
+    this.initialHeartbeat,
     this.inboxCount = 0,
     this.focusComfy = false,
   });
@@ -4963,6 +5128,14 @@ class _SettingsPageState extends State<SettingsPage> {
                             _initiativeStatus ?? '还没有试过',
                             style: AppType.caption.copyWith(color: AppPalette.text3),
                           ),
+                          if (widget.initialHeartbeat != null) ...<Widget>[
+                            const SizedBox(height: 2),
+                            Text(
+                              widget.initialHeartbeat!,
+                              key: const ValueKey('settings-heartbeat'),
+                              style: AppType.caption.copyWith(color: AppPalette.text3),
+                            ),
+                          ],
                         ],
                       ),
                     ),

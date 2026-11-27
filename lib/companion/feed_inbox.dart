@@ -8,18 +8,24 @@ class FeedItem {
     required this.title,
     required this.url,
     required this.source,
+    this.author = '',
     DateTime? at,
   }) : at = at ?? DateTime.now();
 
   final String title;
   final String url;
   final String source;
+
+  /// Who posted it, when the feed exposes that (HN and V2EX do). Used by the
+  /// heartbeat to notice familiar names rather than for display.
+  final String author;
   final DateTime at;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'title': title,
         'url': url,
         'source': source,
+        'author': author,
         'at': at.toIso8601String(),
       };
 
@@ -30,8 +36,15 @@ class FeedItem {
     final url = (raw['url'] ?? '').toString().trim();
     if (title.isEmpty || url.isEmpty) return null;
     final source = (raw['source'] ?? '').toString().trim();
+    final author = (raw['author'] ?? '').toString().trim();
     final at = DateTime.tryParse((raw['at'] ?? '').toString()) ?? DateTime.now();
-    return FeedItem(title: title, url: url, source: source, at: at);
+    return FeedItem(
+      title: title,
+      url: url,
+      source: source,
+      author: author,
+      at: at,
+    );
   }
 }
 

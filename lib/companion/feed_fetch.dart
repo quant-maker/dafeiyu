@@ -56,7 +56,12 @@ Future<List<FeedItem>> _fetchHn(JsonFetcher httpGet) async {
               ? 'https://news.ycombinator.com/item?id=$objectId'
               : '');
       if (url.isEmpty) continue;
-      out.add(FeedItem(title: title, url: url, source: 'HN'));
+      out.add(FeedItem(
+        title: title,
+        url: url,
+        source: 'HN',
+        author: (hit['author'] ?? '').toString().trim(),
+      ));
     }
     return out;
   } catch (_) {
@@ -75,7 +80,14 @@ Future<List<FeedItem>> _fetchV2ex(JsonFetcher httpGet) async {
       final title = (topic['title'] ?? '').toString().trim();
       final url = (topic['url'] ?? '').toString().trim();
       if (title.isEmpty || url.isEmpty) continue;
-      out.add(FeedItem(title: title, url: url, source: 'V2EX'));
+      final member = topic['member'];
+      final author = member is Map ? (member['username'] ?? '').toString().trim() : '';
+      out.add(FeedItem(
+        title: title,
+        url: url,
+        source: 'V2EX',
+        author: author,
+      ));
     }
     return out;
   } catch (_) {
