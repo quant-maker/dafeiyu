@@ -5,12 +5,17 @@ import 'package:flutter/material.dart';
 import '../ui/tokens.dart';
 import 'db.dart';
 import 'galaxy.dart';
+import 'galaxy_view.dart';
 import 'store.dart';
 
 /// 「让她讲这件」：给一个名字，回一段她自己的话。
 typedef GalaxyAsk = Future<String> Function(String name, List<String> related);
 
-/// 星图：一张可以拖着看、点开就能听她讲当天记得什么的图。
+/// 星图：一颗三维的记忆星系。
+///
+/// 层级不是画成一棵树，而是靠纵深：核心（主人、当下的项目）在很近的正面，
+/// 旧事沉到深处、暗下去。社区是「信息交换密集区」，边是神经突触，
+/// 亮光沿着突触流——流动本身就是「记忆在被调用」的样子。
 class GalaxyPage extends StatefulWidget {
   final MemoryStore store;
   final GalaxyAsk? ask;
@@ -21,11 +26,13 @@ class GalaxyPage extends StatefulWidget {
   State<GalaxyPage> createState() => _GalaxyPageState();
 }
 
-class _GalaxyPageState extends State<GalaxyPage> {
+class _GalaxyPageState extends State<GalaxyPage> with SingleTickerProviderStateMixin {
   final GlobalKey _canvasKey = GlobalKey();
 
   List<GalaxyNode> _nodes = const [];
   List<GalaxyLink> _links = const [];
+  List<GalaxyLink> _drawnLinks = const [];
+  List<ClusterBlob> _blobs = const [];
   Map<int, int> _communities = const {};
   Map<int, List<String>> _neighbours = const {};
   Map<int, Entity> _byId = const {};
@@ -40,11 +47,31 @@ class _GalaxyPageState extends State<GalaxyPage> {
 
   GalaxyNode? _selected;
 
+  /// 视角：绕竖轴转、前后倾；双指缩放。
+  double _yaw = 0.4;
+  double _pitch = -0.26;
+  double _zoom = 1.0;
+  double _baseZoom = 1.0;
+
+  /// 自转与流光都由同一个钟驱动，pause 时一起停。
+  late final AnimationController _clock = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 120),
+  )..repeat();
+
   @override
   void initState() {
     super.initState();
     _load();
   }
+
+  @override
+  void dispose() {
+    _clock.dispose();
+    super.dispose();
+  }
+
+  double get _yawNow => _yaw + _clock.value * math.pi * 2;
 
   Future<void> _load() async {
     try {
@@ -77,6 +104,10 @@ class _GalaxyPageState extends State<GalaxyPage> {
         GalaxyLayout(nodes: nodes, links: links).simulate();
       }
       final communities = detectCommunities(nodes, links);
+      final blobs = clusterBlobs(nodes, communities);
+      // 每帧画三千条曲线不现实：只画最有分量的那几百条，剩下的靠密集区的光表达。
+      final drawn = List<GalaxyLink>.of(links)
+        ..sort((a, b) => b.weight.compareTo(a.weight));
       var minSeen = nodes.isEmpty ? 0 : nodes.first.firstSeen;
       var maxSeen = minSeen;
       for (final n in nodes) {
@@ -87,6 +118,8 @@ class _GalaxyPageState extends State<GalaxyPage> {
       setState(() {
         _nodes = nodes;
         _links = links;
+        _drawnLinks = drawn.take(420).toList();
+        _blobs = blobs;
         _communities = communities;
         _neighbours = neighbours;
         _byId = byId;
@@ -112,12 +145,20 @@ class _GalaxyPageState extends State<GalaxyPage> {
 
   void _onTap(Offset local, Size size) {
     GalaxyNode? best;
-    var bestD = 44.0;
+    var bestD = 46.0;
+    final yaw = _yawNow;
     for (final n in _nodes) {
       if (!_visible(n)) continue;
-      final dx = n.x * size.width - local.dx;
-      final dy = n.y * size.height - local.dy;
-      final d = math.sqrt(dx * dx + dy * dy);
+      final p = projectPoint(
+        x: n.x,
+        y: n.y,
+        z: n.z,
+        size: size,
+        yaw: yaw,
+        pitch: _pitch,
+        spread: _zoom,
+      );
+      final d = (p.screen - local).distance;
       if (d < bestD) {
         bestD = d;
         best = n;
@@ -257,7 +298,7 @@ class _GalaxyPageState extends State<GalaxyPage> {
             padding: const EdgeInsets.only(right: AppSpacing.l),
             child: Center(
               child: Text(
-                '${_nodes.length} 颗星 · ${_links.length} 条线',
+                '${_nodes.length} 颗星 · ${_links.length} 条突触',
                 style: AppType.caption.copyWith(color: AppPalette.text3),
               ),
             ),
@@ -269,7 +310,7 @@ class _GalaxyPageState extends State<GalaxyPage> {
           gradient: RadialGradient(
             center: Alignment(0, -0.2),
             radius: 1.1,
-            colors: <Color>[Color(0xFF10181A), AppPalette.ink],
+            colors: <Color>[Color(0xFF0C1416), AppPalette.ink],
           ),
         ),
         child: _loading
@@ -305,24 +346,42 @@ class _GalaxyPageState extends State<GalaxyPage> {
                           return GestureDetector(
                             behavior: HitTestBehavior.opaque,
                             onTapUp: (d) => _onTap(d.localPosition, size),
-                            child: InteractiveViewer(
-                              minScale: 0.6,
-                              maxScale: 4,
-                              boundaryMargin: const EdgeInsets.all(80),
-                              child: SizedBox(
-                                key: _canvasKey,
-                                width: size.width,
-                                height: size.height,
-                                child: CustomPaint(
-                                  painter: _GalaxyPainter(
+                            onScaleStart: (d) {
+                              _baseZoom = _zoom;
+                            },
+                            onScaleUpdate: (d) {
+                              if (d.pointerCount <= 1) {
+                                setState(() {
+                                  _yaw += d.focalPointDelta.dx * 0.006;
+                                  _pitch = (_pitch + d.focalPointDelta.dy * 0.005).clamp(-1.2, 1.2);
+                                });
+                              } else {
+                                setState(() {
+                                  _zoom = (_baseZoom * d.scale).clamp(0.55, 3.4);
+                                });
+                              }
+                            },
+                            child: AnimatedBuilder(
+                              animation: _clock,
+                              builder: (ctx, _) {
+                                return SizedBox(
+                                  key: _canvasKey,
+                                  width: size.width,
+                                  height: size.height,
+                                  child: GalaxyView(
                                     nodes: _nodes,
-                                    links: _links,
+                                    links: _drawnLinks,
                                     communities: _communities,
+                                    blobs: _blobs,
                                     visible: _visible,
                                     selected: _selected?.id,
+                                    yaw: _yawNow,
+                                    pitch: _pitch,
+                                    zoom: _zoom,
+                                    phase: _clock.value,
                                   ),
-                                ),
-                              ),
+                                );
+                              },
                             ),
                           );
                         },
@@ -344,108 +403,15 @@ class _GalaxyPageState extends State<GalaxyPage> {
                     value: _time,
                     onChanged: (v) => setState(() => _time = v),
                   ),
+                  Text(
+                    '拖动转视角 · 双指缩放 · 点一颗星听她讲',
+                    style: AppType.caption.copyWith(color: AppPalette.text4),
+                  ),
                 ],
               ),
             ),
     );
   }
-}
-
-class _GalaxyPainter extends CustomPainter {
-  final List<GalaxyNode> nodes;
-  final List<GalaxyLink> links;
-  final Map<int, int> communities;
-  final bool Function(GalaxyNode) visible;
-  final int? selected;
-
-  _GalaxyPainter({
-    required this.nodes,
-    required this.links,
-    required this.communities,
-    required this.visible,
-    this.selected,
-  });
-
-  static const List<Color> _communityColors = <Color>[
-    Color(0xFF8FD3C4),
-    Color(0xFFE0B15F),
-    Color(0xFF7FA6C9),
-    Color(0xFFA79BC4),
-    Color(0xFFD9786B),
-    Color(0xFF9FCB8F),
-  ];
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final pos = <int, Offset>{};
-    for (final n in nodes) {
-      if (!visible(n)) continue;
-      pos[n.id] = Offset(n.x * size.width, n.y * size.height);
-    }
-
-    // 先画边，压在星下面。
-    final linePaint = Paint()..strokeCap = StrokeCap.round;
-    for (final l in links) {
-      final a = pos[l.src];
-      final b = pos[l.dst];
-      if (a == null || b == null) continue;
-      final w = (0.35 + 0.25 * l.weight).clamp(0.35, 1.6);
-      linePaint
-        ..color = AppPalette.primary.withValues(alpha: 0.10)
-        ..strokeWidth = w;
-      canvas.drawLine(a, b, linePaint);
-    }
-
-    for (final n in nodes) {
-      final p = pos[n.id];
-      if (p == null) continue;
-      final base = _colorFor(n);
-      final r = n.radius;
-      final highlight = selected == n.id;
-
-      final glow = Paint()
-        ..shader = RadialGradient(
-          colors: <Color>[base.withValues(alpha: 0.35 * n.alpha), base.withValues(alpha: 0)],
-        ).createShader(Rect.fromCircle(center: p, radius: r * 3.2));
-      canvas.drawCircle(p, r * 3.2, glow);
-
-      canvas.drawCircle(p, r, Paint()..color = base.withValues(alpha: n.alpha.clamp(0.2, 1.0)));
-      if (highlight) {
-        canvas.drawCircle(
-          p,
-          r + 4,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.6
-            ..color = AppPalette.text1.withValues(alpha: 0.8),
-        );
-      }
-      if (n.radius >= 8 || highlight) {
-        final tp = TextPainter(
-          text: TextSpan(
-            text: n.label,
-            style: AppType.caption.copyWith(
-              color: AppPalette.text1.withValues(alpha: 0.55 + 0.45 * n.alpha),
-              fontSize: 11,
-            ),
-          ),
-          textDirection: TextDirection.ltr,
-          maxLines: 1,
-          ellipsis: '…',
-        )..layout(maxWidth: 96);
-        tp.paint(canvas, p + Offset(-tp.width / 2, r + 4));
-      }
-    }
-  }
-
-  Color _colorFor(GalaxyNode n) {
-    final c = communities[n.id] ?? 0;
-    return _communityColors[c % _communityColors.length];
-  }
-
-  @override
-  bool shouldRepaint(covariant _GalaxyPainter old) =>
-      old.nodes != nodes || old.selected != selected || old.links != links;
 }
 
 class _Dot extends StatelessWidget {
