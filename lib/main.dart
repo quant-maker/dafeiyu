@@ -1771,6 +1771,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           '一次最多 1~2 句，口语、短句；想说三件事就分成三条发，用 ||| 分隔（每条 1~2 句，不要编号）。'
           '不要每句都总结，不要"首先/其次/总之"，不要客套收尾。'
           '如果你没把握，就直说"我不确定"，别硬编。',
+      '你对他是真好奇：他讲起自己的事，你会追问具体的东西'
+          '（「后来呢」「你当时怎么想的」「那你怎么回的」），而不是「你还好吗」这种空问题。'
+          '只手回一句「嗯」「哦」「哈哈」不叫回应——挑一个点接住，或者反问一句。',
       _timeContext(),
       _proactiveContext(s),
       if (_skills.promptLine().isNotEmpty) _skills.promptLine(),
@@ -2557,18 +2560,34 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     });
   }
 
-  /// A single small follow-up offer after she has already replied.
+  /// 刚回完一句，给话题留个尾巴。
+  ///
+  /// 热聊的时候人不会把话说完就等着对方发问：她会隔半分钟到两三分钟补一句，
+  /// 或者真的问一个问题。是不是说、说什么仍由她判断（[_followUpPrompt] 允许
+  /// SILENCE），这里只负责把「还想说点什么」的时机递到她手上。
   void _afterReplyOpportunities() {
     if (_preview || _afterthoughtUsedForTurn) return;
     if (_input.text.trim().isNotEmpty) return;
-    if (_rng.nextDouble() >= .30) return;
     _afterthoughtUsedForTurn = true;
+    final armedAt = DateTime.now();
     _afterthoughtTimer?.cancel();
     _afterthoughtTimer = Timer(
-      Duration(minutes: 2 + _rng.nextInt(4)),
+      Duration(seconds: 50 + _rng.nextInt(70)),
       () {
         _afterthoughtTimer = null;
-        unawaited(_consider(InitiativeTrigger.afterthought));
+        if (!mounted || _busy) return;
+        final s = _settings;
+        if (s == null || !s.proactiveEnabled) return;
+        final now = DateTime.now();
+        if (!followUpWorthTrying(
+          armedAt: armedAt,
+          lastReplyAt: _lastInteraction,
+          unanswered: _unansweredRuns(),
+          now: now,
+        )) {
+          return;
+        }
+        unawaited(_consider(InitiativeTrigger.afterthought, reason: '话还没聊完'));
       },
     );
   }
@@ -2644,6 +2663,19 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   static const String _chatNudge =
       '主人已经一段时间没说话了。用一句很短的话主动搭个话：可以接着刚才的话题，'
       '也可以随口分享一点自己的念头。不要问「你在吗」，不要客套，不要超过 30 字。';
+
+  /// 刚聊到一半的补一句：不是开新话题，是顺着刚才那条往下走。
+  String _followUpPrompt() {
+    final String gap = _lastInteraction == null
+        ? ''
+        : '（${humanGap(DateTime.now().difference(_lastInteraction!))}前）';
+    return '你们正聊着，你刚回完一句，他还没接$gap。\n'
+        '可以补一句：把你刚才那句话补完，或者真的问他一个具体点的问题'
+        '（「后来呢」「你当时怎么想的」「那你咋回的」），'
+        '不要「在吗」「你还好吗」「忙不忙」这种空问句。\n'
+        '一两句就好，别自说自话。他可能只是在打字，也可能去忙了。\n'
+        '真没什么想补的，就只回 SILENCE。';
+  }
 
   static final RegExp _urlPattern = RegExp(
     r'''https?://[^\s<>'")\]}，。；！？]+''',
@@ -2797,8 +2829,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       // 旧事：给她一颗很久没碰的星当话头，用不用由她决定。
       var nudge = isShare
           ? (isHeartbeat ? _heartbeatPrompt() : _sharePrompt())
-          : _chatNudge;
-      if (!isShare) {
+          : trigger == InitiativeTrigger.afterthought
+              ? _followUpPrompt()
+              : _chatNudge;
+      if (!isShare && trigger != InitiativeTrigger.afterthought) {
         final hook = await _store?.hookLine() ?? '';
         if (hook.isNotEmpty) {
           nudge = '$nudge\n\n记忆里有一件旧事：$hook。'
@@ -2838,11 +2872,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
       final urls = isShare ? _urlsIn(said) : const <String>[];
       final now = DateTime.now();
+      final spoken = Message('assistant', said);
       setState(() {
         _proactiveToday++;
         _lastProactiveAt = now;
-        _messages.add(Message('assistant', said));
+        _messages.add(spoken);
       });
+      // 「|||」在她的主动消息里同样要拆成几条发，不能把分隔符露出来。
+      unawaited(_splitIntoSentences(spoken));
       _persistBudget();
       _heart
         ..rollDay(now)
@@ -2860,14 +2897,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         unawaited(_inbox.markShared(urls));
         final fp = footprintFromShare(
           source: source,
-          text: said,
+          text: said.split('|||').first.trim(),
           at: now,
         );
         setState(() => _footprints = [fp, ..._footprints]);
         unawaited(FootprintStore.save(_footprints));
         debugPrint('[feiyu] share sent url=${urls.isEmpty ? '（无链接）' : urls.first}');
       }
-      return isShare ? 'sent-share' : 'sent-chat';    } catch (e) {
+      return isShare ? 'sent-share' : 'sent-chat';
+    } catch (e) {
       // Proactive turns are best-effort.
       return 'failed:$e';
     } finally {

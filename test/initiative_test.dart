@@ -56,6 +56,71 @@ void main() {
     });
   });
 
+  group('followUpWorthTrying', () {
+    final now = DateTime(2026, 11, 27, 16, 0);
+    final armedAt = now.subtract(const Duration(minutes: 1));
+
+    test('他刚说过话、还没到两分钟，可以补一句', () {
+      expect(
+        followUpWorthTrying(
+          armedAt: armedAt,
+          lastReplyAt: now.subtract(const Duration(minutes: 4)),
+          unanswered: 1,
+          now: now,
+        ),
+        isTrue,
+      );
+    });
+
+    test('他已经回了就不插话', () {
+      expect(
+        followUpWorthTrying(
+          armedAt: armedAt,
+          lastReplyAt: now,
+          unanswered: 0,
+          now: now,
+        ),
+        isFalse,
+      );
+    });
+
+    test('连着两句没人接就收着', () {
+      expect(
+        followUpWorthTrying(
+          armedAt: armedAt,
+          lastReplyAt: now.subtract(const Duration(minutes: 5)),
+          unanswered: 2,
+          now: now,
+        ),
+        isFalse,
+      );
+    });
+
+    test('超过窗口就当聊天散了', () {
+      expect(
+        followUpWorthTrying(
+          armedAt: armedAt,
+          lastReplyAt: now.subtract(const Duration(minutes: 20)),
+          unanswered: 0,
+          now: now,
+        ),
+        isFalse,
+      );
+    });
+
+    test('没有他说过话的记录就不追', () {
+      expect(
+        followUpWorthTrying(
+          armedAt: armedAt,
+          lastReplyAt: null,
+          unanswered: 0,
+          now: now,
+        ),
+        isFalse,
+      );
+    });
+  });
+
   test('SILENCE marker and fresh-link checks', () {
     expect(isSilenceReply('SILENCE'), isTrue);
     expect(isSilenceReply(' [silence] '), isTrue);

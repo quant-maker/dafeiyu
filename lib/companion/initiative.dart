@@ -44,6 +44,25 @@ int presenceDelayMinutes(Random rng) => 25 + rng.nextInt(46);
 /// What kind of line she is about to say.
 enum InitiativeMode { silent, chat, share }
 
+/// 热聊里敢不敢再补一句。
+///
+/// 不是配额，是当下的判断依据：他刚说过话、你们还在同一个话题上、而且你
+/// 没有连着说几句没人接。过了这个窗口就当聊天已经散了，别硬续。
+bool followUpWorthTrying({
+  required DateTime armedAt,
+  required DateTime? lastReplyAt,
+  required int unanswered,
+  required DateTime now,
+  Duration window = const Duration(minutes: 15),
+}) {
+  if (lastReplyAt == null) return false;
+  // 他已经回了，自然会有一条正常的回复，不需要插话。
+  if (lastReplyAt.isAfter(armedAt)) return false;
+  // 连着两句没人接，就先收着。
+  if (unanswered >= 2) return false;
+  return now.difference(lastReplyAt) <= window;
+}
+
 /// A pause of this long before resuming counts as "he was away".
 const Duration reopenGap = Duration(minutes: 40);
 
