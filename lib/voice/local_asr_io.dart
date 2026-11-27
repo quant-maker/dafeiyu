@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
@@ -26,6 +27,14 @@ class LocalAsrImpl {
         'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2',
   };
 
+  /// GitHub 在国内经常解析不了；hf-mirror 上有同样两份文件，直接按文件下。
+  static const _mirrors = <String, String>{
+    'dolphin':
+        'https://hf-mirror.com/csukuangfj/sherpa-onnx-dolphin-base-ctc-multi-lang-int8-2025-04-02/resolve/main',
+    'sensevoice':
+        'https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main',
+  };
+
   static Future<LocalAsrImpl> create({String kind = 'dolphin'}) async {
     final base = await getApplicationSupportDirectory();
     final dir = Directory('${base.path}/asr_$kind');
@@ -38,7 +47,56 @@ class LocalAsrImpl {
 
   Future<bool> get ready async => await _model.exists() && await _tokens.exists();
 
+  /// Mirror first (reachable in China), GitHub bundle as the fallback.
   Future<void> download({void Function(double progress)? onProgress}) async {
+    try {
+      await _downloadFromMirror(onProgress);
+      return;
+    } catch (e) {
+      debugPrint('[feiyu] asr mirror download failed, trying github: $e');
+    }
+    await _downloadBundle(onProgress);
+  }
+
+  Future<void> _downloadFromMirror(void Function(double progress)? onProgress) async {
+    final base = _mirrors[kind]!;
+    final client = http.Client();
+    try {
+      // The model is the bulk of it; tokens.txt is tiny.
+      await _fetch(client, '$base/model.int8.onnx', _model, onProgress, 0.97, 0);
+      await _fetch(client, '$base/tokens.txt', _tokens, onProgress, 0.03, 0.97);
+      onProgress?.call(1);
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<void> _fetch(
+    http.Client client,
+    String url,
+    File target,
+    void Function(double progress)? onProgress,
+    double weight,
+    double offset,
+  ) async {
+    final res = await client.send(http.Request('GET', Uri.parse(url)));
+    if (res.statusCode != 200) throw Exception('下载失败 HTTP ${res.statusCode}');
+    final total = res.contentLength ?? 0;
+    var got = 0;
+    final sink = target.openWrite();
+    try {
+      await for (final chunk in res.stream) {
+        sink.add(chunk);
+        got += chunk.length;
+        if (total > 0) onProgress?.call(offset + got / total * weight);
+      }
+    } finally {
+      await sink.close();
+    }
+    if (total > 0 && got < total) throw Exception('下载不完整：$got/$total');
+  }
+
+  Future<void> _downloadBundle(void Function(double progress)? onProgress) async {
     final url = _urls[kind]!;
     final tmp = File('${_dir.path}/bundle.tar.bz2');
     final client = http.Client();

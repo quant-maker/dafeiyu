@@ -1,9 +1,11 @@
 // On-device speech synthesis with Kokoro (via sherpa-onnx).
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
@@ -17,6 +19,21 @@ class LocalTtsImpl {
 
   static const _bundleUrl =
       'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2';
+
+  /// GitHub 在国内经常解析不了，hf-mirror 有同一个模型仓库的文件树。
+  static const _repo = 'csukuangfj/kokoro-int8-multi-lang-v1_1';
+  static const _fileBase = 'https://hf-mirror.com/$_repo/resolve/main';
+
+  static const _wanted = <String>{
+    'model.int8.onnx',
+    'voices.bin',
+    'tokens.txt',
+    'lexicon-us-en.txt',
+    'lexicon-zh.txt',
+    'date-zh.fst',
+    'number-zh.fst',
+    'phone-zh.fst',
+  };
 
   static Future<LocalTtsImpl> create() async {
     final base = await getApplicationSupportDirectory();
@@ -41,7 +58,66 @@ class LocalTtsImpl {
 
   Future<bool> get ready async => await _model.exists();
 
+  /// Mirror first (works in China), GitHub bundle as the fallback.
   Future<void> download({void Function(double progress)? onProgress}) async {
+    try {
+      await _downloadFromMirror(onProgress);
+      return;
+    } catch (e) {
+      debugPrint('[feiyu] kokoro mirror download failed, trying github: $e');
+    }
+    await _downloadBundle(onProgress);
+  }
+
+  /// The mirror exposes the unpacked bundle; pull the files the engine needs.
+  Future<void> _downloadFromMirror(void Function(double progress)? onProgress) async {
+    final client = http.Client();
+    try {
+      final res = await client
+          .get(Uri.parse('https://hf-mirror.com/api/models/$_repo?blobs=true'))
+          .timeout(const Duration(seconds: 30));
+      if (res.statusCode != 200) throw Exception('列表接口 HTTP ${res.statusCode}');
+      final json = jsonDecode(res.body) as Map<String, dynamic>;
+      final siblings = (json['siblings'] as List? ?? const []).cast<Map<String, dynamic>>();
+
+      final files = <MapEntry<String, int>>[];
+      for (final f in siblings) {
+        final name = (f['rfilename'] ?? '').toString();
+        if (!_wanted.contains(name) &&
+            !name.startsWith('espeak-ng-data/') &&
+            !name.startsWith('dict/')) {
+          continue;
+        }
+        if (name.endsWith('.md') || name.endsWith('.py')) continue;
+        files.add(MapEntry(name, (f['size'] as num?)?.toInt() ?? 0));
+      }
+      if (files.isEmpty) throw Exception('下载列表为空');
+
+      final total = files.fold<int>(0, (sum, e) => sum + e.value);
+      var done = 0;
+      for (final f in files) {
+        final target = File('${_dir.path}/${f.key == 'model.int8.onnx' ? 'model.onnx' : f.key}');
+        await target.parent.create(recursive: true);
+        final res = await client.send(http.Request('GET', Uri.parse('$_fileBase/${f.key}')));
+        if (res.statusCode != 200) throw Exception('下载 ${f.key} 失败 HTTP ${res.statusCode}');
+        final sink = target.openWrite();
+        try {
+          await for (final chunk in res.stream) {
+            sink.add(chunk);
+            done += chunk.length;
+            if (total > 0) onProgress?.call(done / total * 0.99);
+          }
+        } finally {
+          await sink.close();
+        }
+      }
+      onProgress?.call(1);
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<void> _downloadBundle(void Function(double progress)? onProgress) async {
     final archiveFile = File('${_dir.path}/kokoro.tar.bz2');
     final client = http.Client();
     try {
@@ -70,7 +146,8 @@ class LocalTtsImpl {
         if (entry.isFile) {
           final parts = entry.name.split('/');
           final rel = parts.length > 1 ? parts.sublist(1).join('/') : entry.name;
-          final out = File('${_dir.path}/$rel');
+          // The mirror path stores the quantised name; the engine wants model.onnx.
+          final out = File('${_dir.path}/${rel == 'model.int8.onnx' ? 'model.onnx' : rel}');
           await out.parent.create(recursive: true);
           await out.writeAsBytes(entry.content as List<int>);
         }

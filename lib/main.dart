@@ -112,17 +112,17 @@ class AsrPreset {
 }
 
 const kAsrPresets = <AsrPreset>[
-  AsrPreset(id: 'local', name: '本机离线（Dolphin / SenseVoice）', baseUrl: '', models: ['local']),
-  AsrPreset(id: 'same', name: '跟随聊天厂商', baseUrl: '', models: []),
+  AsrPreset(id: 'local', name: '本机离线（免费，下载一次）', baseUrl: '', models: ['local']),
+  AsrPreset(id: 'same', name: '跟随对话厂商（需要它支持转写）', baseUrl: '', models: []),
   AsrPreset(
     id: 'siliconflow',
-    name: '硅基流动（SenseVoice）',
+    name: '硅基流动（需要 Key）',
     baseUrl: 'https://api.siliconflow.cn/v1',
     models: ['FunAudioLLM/SenseVoiceSmall'],
   ),
   AsrPreset(
     id: 'openai',
-    name: 'OpenAI（Whisper 系列）',
+    name: 'OpenAI（需要 Key）',
     baseUrl: 'https://api.openai.com/v1',
     models: ['gpt-4o-mini-transcribe', 'whisper-1'],
   ),
@@ -193,7 +193,7 @@ class Settings {
     this.comfyWorkflowEdit = '',
     this.embeddingModel = 'Qwen/Qwen3-Embedding-4B',
     this.asrModel = 'gpt-4o-mini-transcribe',
-    this.asrPreset = 'same',
+    this.asrPreset = (kIsWeb ? 'same' : 'local'),
     this.asrLocalModel = 'dolphin',
     this.visionEnabled = false,
     this.visionProvider = 'moonshot',
@@ -258,7 +258,7 @@ class Settings {
       comfyWorkflowEdit: (j['comfyWorkflowEdit'] ?? '') as String? ?? '',
       embeddingModel: pick(j['embeddingModel'] as String?, 'Qwen/Qwen3-Embedding-4B'),
       asrModel: pick(j['asrModel'] as String?, 'gpt-4o-mini-transcribe'),
-      asrPreset: pick(j['asrPreset'] as String?, 'same'),
+      asrPreset: pick(j['asrPreset'] as String?, kIsWeb ? 'same' : 'local'),
       asrLocalModel: pick(j['asrLocalModel'] as String?, 'dolphin'),
       visionEnabled: j['visionEnabled'] as bool? ?? false,
       visionProvider: pick(j['visionProvider'] as String?, 'moonshot'),
@@ -1016,9 +1016,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
     final s = _settings;
     if (s == null) return;
-    if (s.apiKey.isEmpty) {
-      setState(() => _error = '语音需要先在设置里填 API Key（走网关转写）');
+    final bool localAsr = s.asrPreset == 'local';
+    if (!localAsr && s.apiKey.isEmpty) {
+      setState(() => _error = '语音需要先在设置里填 API Key（或把语音识别换成「本机离线」，不用 Key）');
       return;
+    }
+    if (localAsr) {
+      final engine = await LocalAsrImpl.create(kind: s.asrLocalModel);
+      if (!await engine.ready) {
+        await _promptModelDownload();
+        return;
+      }
     }
     try {
       if (!await _recorder.hasPermission()) {
@@ -1248,12 +1256,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   /// Download the on-device model, showing a simple progress dialog.
   Future<void> _promptModelDownload() async {
     if (!mounted) return;
+    final s = _settings;
+    final String kind = s?.asrLocalModel ?? 'dolphin';
+    final String label = LocalAsrImpl.models[kind] ?? LocalAsrImpl.models['dolphin']!;
     final go = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('还要下载离线语音模型'),
-        content: const Text(
-          'SenseVoice 中文识别模型约 228 MB，只需下载一次，之后完全离线、不花钱。\n\n'
+        title: const Text('下载离线语音模型'),
+        content: Text(
+          '$label，只需下载一次，之后完全离线、不花钱，也不用填任何 API Key。\n\n'
           '下载完就能直接说话，即使断网也认识。',
         ),
         actions: [
@@ -1302,12 +1313,28 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
-  /// 404 from the transcription endpoint: the preset simply has no such API.
+  /// 404 from the transcription endpoint, or no key to call it with.
+  ///
+  /// 手机上正确的答案是离线模型，不是别人的 API Key：直接切到本机识别，把一次性
+  /// 下载摆出来。浏览器没有离线引擎，只能指向一个托管服务。
   Future<void> _handleAsrUnavailable() async {
     final s = _settings;
     if (s == null || !mounted) return;
-    final switchable = s.asrPreset == 'same';
 
+    if (!kIsWeb) {
+      await s.copyWithAsr(preset: 'local', baseUrl: '', model: 'local').save();
+      if (mounted) setState(() => _settings = s);
+      if (!mounted) return;
+      final localEngine = await LocalAsrImpl.create(kind: s.asrLocalModel);
+      if (await localEngine.ready) {
+        if (mounted) setState(() => _voiceHint = '已切到本机离线识别，再说一次就行');
+        return;
+      }
+      await _promptModelDownload();
+      return;
+    }
+
+    final switchable = s.asrPreset == 'same';
     if (switchable) {
       // Point her at a service that definitely has /audio/transcriptions.
       final preset = asrById('siliconflow');
@@ -1327,9 +1354,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         title: const Text('语音识别还没配好'),
         content: Text(
           switchable
-              ? '当前厂商没有语音转写接口（404）。\n\n'
+              ? '当前厂商没有可用的语音转写（404）。\n\n'
                   '已经帮你切到「硅基流动 · SenseVoice」，去设置里填一个它的 API Key 就能用。'
-              : '转写接口返回 404，检查设置 → 语音识别里的 Base URL 和模型名。',
+              : '语音转写不可用（404 或 Key 无效），检查设置 → 语音识别里的 Base URL、Key 和模型名。',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('知道了')),
@@ -1427,6 +1454,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     final asrBase = s.asrBaseUrl.trim().isEmpty ? s.baseUrl : s.asrBaseUrl.trim();
     final asrKey = s.asrApiKey.trim().isEmpty ? s.apiKey : s.asrApiKey.trim();
+    if (asrKey.isEmpty) throw _AsrUnavailable(s.asrPreset);
     final base = asrBase.endsWith('/') ? asrBase.substring(0, asrBase.length - 1) : asrBase;
     final req = http.MultipartRequest('POST', Uri.parse('$base/audio/transcriptions'))
       ..headers['authorization'] = 'Bearer $asrKey'
@@ -1439,7 +1467,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       throw _AsrUnavailable(s.asrPreset);
     }
     if (streamed.statusCode == 401 || streamed.statusCode == 403) {
-      throw Exception('语音服务的 Key 无效（HTTP ${streamed.statusCode}），检查设置里的语音识别 Key');
+      // 手机上没必要为一个 Key 卡住：交给离线模型。
+      throw _AsrUnavailable(s.asrPreset);
     }
     if (streamed.statusCode != 200) {
       throw Exception('HTTP ${streamed.statusCode}: ${body.substring(0, body.length.clamp(0, 160))}');
@@ -2913,6 +2942,20 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       await _tts.speak(spoken);
     } catch (e) {
       debugPrint('[feiyu] system tts FAILED: $e');
+      // 有些手机根本没装中文语音包。Kokoro 只差一次下载，别让她哑掉。
+      try {
+        final engine = _localTts ??= await LocalTtsImpl.create();
+        if (await engine.ready) {
+          await engine.speak(
+            spoken,
+            sid: s.ttsSid,
+            speed: s.ttsSpeed,
+            awaitCompletion: awaitCompletion,
+          );
+        }
+      } catch (e2) {
+        debugPrint('[feiyu] local tts fallback FAILED: $e2');
+      }
     }
   }
 
@@ -3555,6 +3598,9 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _comfyStarting = false;
   bool _downloadingTts = false;
   double _ttsProgress = 0;
+  bool _asrModelReady = false;
+  bool _downloadingAsr = false;
+  double _asrProgress = 0;
   late String _provider;
   late Map<String, String> _keys;
   late final TextEditingController _asr;
@@ -3605,6 +3651,11 @@ class _SettingsPageState extends State<SettingsPage> {
     LocalTtsImpl.create().then((e) => e.ready).then((ok) {
       if (mounted) setState(() => _ttsModelReady = ok);
     }).catchError((Object _) {});
+    if (!kIsWeb) {
+      LocalAsrImpl.create(kind: widget.initial.asrLocalModel).then((e) => e.ready).then((ok) {
+        if (mounted) setState(() => _asrModelReady = ok);
+      }).catchError((Object _) {});
+    }
     _provider = widget.initial.provider;
     _keys = Map.of(widget.initial.apiKeys);
     _asr = TextEditingController(text: widget.initial.asrModel);
@@ -3760,6 +3811,29 @@ class _SettingsPageState extends State<SettingsPage> {
       }
     } finally {
       if (mounted) setState(() => _downloadingTts = false);
+    }
+  }
+
+  /// One-time download of the on-device recogniser picked in [ _asrLocalModel ].
+  Future<void> _downloadAsr() async {
+    if (_downloadingAsr) return;
+    final engine = await LocalAsrImpl.create(kind: _asrLocalModel);
+    setState(() {
+      _downloadingAsr = true;
+      _asrProgress = 0;
+    });
+    try {
+      await engine.download(onProgress: (p) {
+        if (mounted) setState(() => _asrProgress = p);
+      });
+      final ok = await engine.ready;
+      if (mounted) setState(() => _asrModelReady = ok);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载失败：$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _downloadingAsr = false);
     }
   }
 
@@ -4391,6 +4465,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 const SizedBox(height: 14),
                 SettingsRow(
                   label: '发音引擎',
+                  description: '系统语音不用任何 Key；手机没装中文语音包就选本机 Kokoro',
                   child: DropdownButtonFormField<String>(
                     initialValue: _ttsEngine,
                     isExpanded: true,
@@ -4455,11 +4530,12 @@ class _SettingsPageState extends State<SettingsPage> {
               const SizedBox(height: 14),
               SettingsRow(
                 label: '语音识别服务',
-                description: '录音后上传这里转文字，不用手机自带识别',
+                description: '「本机离线」不用 Key，第一次用下载一次模型就行',
                 child: DropdownButtonFormField<String>(
                   initialValue: _asrPreset,
                   isExpanded: true,
                   items: kAsrPresets
+                      .where((p) => !kIsWeb || p.id != 'local')
                       .map((p) => DropdownMenuItem(
                             value: p.id,
                             child: Text(p.name, style: AppType.bodySmall),
@@ -4489,9 +4565,31 @@ class _SettingsPageState extends State<SettingsPage> {
                               child: Text(e.value, style: AppType.bodySmall),
                             ))
                         .toList(),
-                    onChanged: (v) => setState(() => _asrLocalModel = v ?? 'dolphin'),
+                    onChanged: (v) {
+                      setState(() => _asrLocalModel = v ?? 'dolphin');
+                      LocalAsrImpl.create(kind: _asrLocalModel).then((e) => e.ready).then((ok) {
+                        if (mounted) setState(() => _asrModelReady = ok);
+                      }).catchError((Object _) {});
+                    },
                   ),
                 ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: _downloadingAsr ? null : _downloadAsr,
+                    icon: const Icon(Icons.download_outlined, size: 18),
+                    label: Text(
+                      _asrModelReady ? '模型已就绪（点击重新下载）' : '下载离线识别模型（免费）',
+                    ),
+                  ),
+                ),
+                if (_downloadingAsr) ...[
+                  const SizedBox(height: 4),
+                  LinearProgressIndicator(value: _asrProgress),
+                  const SizedBox(height: 4),
+                  Text('${(_asrProgress * 100).round()}%', style: AppType.caption.copyWith(color: AppPalette.text2)),
+                ],
               ],
               if (_asrPreset != 'same' && _asrPreset != 'local') ...[
                 const SizedBox(height: 12),
@@ -4512,14 +4610,16 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
               ],
-              const SizedBox(height: 12),
-              SettingsRow(
-                label: '转写模型',
-                child: TextField(
-                  controller: _asr,
-                  decoration: const InputDecoration(hintText: '转写模型，例如 FunAudioLLM/SenseVoiceSmall', isDense: true),
+              if (_asrPreset != 'local') ...[
+                const SizedBox(height: 12),
+                SettingsRow(
+                  label: '转写模型',
+                  child: TextField(
+                    controller: _asr,
+                    decoration: const InputDecoration(hintText: '转写模型，例如 FunAudioLLM/SenseVoiceSmall', isDense: true),
+                  ),
                 ),
-              ),
+              ],
               const SizedBox(height: 14),
               const SectionHeader(label: '看图模型'),
               const SizedBox(height: 14),

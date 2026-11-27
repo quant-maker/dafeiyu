@@ -12,7 +12,8 @@
 | 功能 | 说明 |
 |---|---|
 | 流式对话 | SSE 逐字输出，可随时中断 |
-| 语音输入 | Android 走系统 `SpeechRecognizer`；Web 走浏览器 Web Speech |
+| 语音输入 | 录音后转写：手机默认走本机离线模型（Dolphin / SenseVoice，下载一次，不用 Key）；Web 走浏览器 Web Speech，也可切云端转写 |
+| 语音朗读 | 默认系统 TTS（不花钱、不用 Key）；可选本机 Kokoro（离线，下载一次） |
 | 拍照 / 选图 | 以 OpenAI `image_url` content part 发给视觉模型 |
 | 自动记忆 | 每 3 轮抽取一次关于主人的长期事实，存本地 SQLite，按重要度保留并注入 system prompt |
 | 记忆库 | drift/SQLite：事实 / 情景 / 实体 / 关系 / 分层块，向量 int8 量化后本地检索 |
@@ -67,6 +68,14 @@ node server/server.mjs
 
 提示词中英文都能写：这类模型的文本编码器只认英文，中文会先由对话模型翻成英文再送进 ComfyUI
 （否则出来就是那张灰糊糊的「水墨画」）。翻译结果按原文缓存，同一句话不会重复花 token。
+
+### 离线语音（不用 Key）
+
+语音识别默认走本机模型：Dolphin（99 MB，快）或 SenseVoice（228 MB，方言更强），
+在设置 → 声音 → 语音识别里下载一次，之后录音在手机上转文字，断网也能用。
+语音朗读默认用系统 TTS，同样不需要 Key；想要更自然的声音可以切「本机 Kokoro」（147 MB）。
+
+模型从 `hf-mirror.com` 拉（GitHub 在国内经常解析不了），下不动会自动退回 GitHub。
 
 ### Android（CI）
 
